@@ -63,6 +63,7 @@ PUBG 挂机脚本（Python 版）—— 按键精灵 PC 版源码的 1:1 移植
 """
 
 import ctypes
+import ctypes.wintypes as wintypes
 import sys
 import time
 
@@ -100,6 +101,14 @@ COLOR_PLANE_READY_2 = "F2F2F2"  # 判断是否可跳伞：右"跳伞"文字 (114
 COLOR_DEAD_1 = "00C8F8"         # 判断是否死亡：(113, 182)
 COLOR_DEAD_2 = "00C8F8"         # 判断是否死亡：(373, 195)
 COLOR_MAP_MARKER = "11E5E9"     # 黄标（地图上的标记线）颜色，用来对准方向
+
+# 颜色比较容差：每个通道允许相差多少。
+#   0 = 严格相等（按键精灵 IfColor 的原始行为）
+#   3 = 允许每个通道差 3
+# 为什么默认 3：窗口化/无边框模式下 Windows 桌面合成（DWM）会对画面做一次
+# 颜色转换，实测游戏里的 F2F3F2 读出来是 F1F2F1（每通道差 1）。
+# 如果严格比较，状态判断会永远不成立 —— 所以这里留一点余量。
+COLOR_TOLERANCE = 3
 
 
 # ------------------------------------------------------------------------------
@@ -154,12 +163,15 @@ def log(msg: str) -> None:
 # mss 的对象创建一次就好，反复创建会很慢
 _screen = None
 
+# 新版 mss 用 mss.MSS()，旧版只有 mss.mss()，这里两种都兼容
+_mss_factory = getattr(mss, "MSS", mss.mss)
+
 
 def _get_screen():
     """懒加载截屏对象：第一次用到时才创建。"""
     global _screen
     if _screen is None:
-        _screen = mss.mss()
+        _screen = _mss_factory()
     return _screen
 
 
@@ -174,6 +186,19 @@ def get_pixel_color(x: int, y: int) -> str:
     # pixel(0, 0) 直接返回这个点在本截图里的 (R, G, B)
     r, g, b = shot.pixel(0, 0)
     return f"{r:02X}{g:02X}{b:02X}"
+
+
+def color_matches(actual: str, expected: str) -> bool:
+    """
+    判断两个 "RRGGBB" 颜色是否相同（允许 COLOR_TOLERANCE 的误差）。
+
+    等价于按键精灵的 IfColor x, y, 颜色, 相似度 —— 只是这里的相似度
+    固定用 COLOR_TOLERANCE，避免窗口化模式下的 ±1 色差让判断永远失败。
+    """
+    for i in (0, 2, 4):  # R、G、B 三段
+        if abs(int(actual[i:i + 2], 16) - int(expected[i:i + 2], 16)) > COLOR_TOLERANCE:
+            return False
+    return True
 
 
 def find_color(x1: int, y1: int, x2: int, y2: int, color: str):
@@ -203,8 +228,13 @@ def find_color(x1: int, y1: int, x2: int, y2: int, color: str):
     want_g = int(color[2:4], 16)
     want_b = int(color[4:6], 16)
 
-    # 三个通道同时相等才算命中
-    mask = (img[:, :, 2] == want_r) & (img[:, :, 1] == want_g) & (img[:, :, 0] == want_b)
+    # 三个通道都在容差范围内才算命中（容差见 COLOR_TOLERANCE）
+    tol = COLOR_TOLERANCE
+    mask = (
+        (img[:, :, 2] >= want_r - tol) & (img[:, :, 2] <= want_r + tol)   # R
+        & (img[:, :, 1] >= want_g - tol) & (img[:, :, 1] <= want_g + tol)  # G
+        & (img[:, :, 0] >= want_b - tol) & (img[:, :, 0] <= want_b + tol)  # B
+    )
 
     # nonzero 返回的顺序就是「先按行、再按列」，和按键精灵的扫描顺序一致
     ys, xs = np.nonzero(mask)
@@ -244,12 +274,71 @@ def move_to(x: int, y: int) -> None:
     pydirectinput.moveTo(x, y)
 
 
+# ------------------------------------------------------------------------------
+# 为什么 move_rs 不直接用 pydirectinput.moveRel？
+#
+# 实测（2026-11-26，本机 2560x1440 屏幕 + 1920x1080 窗口）：
+#    pydirectinput.moveRel(200, 0)  -> 鼠标绝对坐标变了，但画面差异只有 0.8，视角没动
+#    SendInput(相对移动 150, 0)      -> 画面差异 24.5，视角正常转动
+#
+# 原因：PUBG 用 Raw Input 读鼠标，只认「相对位移」；
+#       pydirectinput 的 moveRel 内部是先算绝对坐标再发「绝对移动」事件，
+#       这种事件游戏直接忽略（只能挪动系统光标，不能转视角）。
+# 所以这里用 Windows 的 SendInput 发一个真正的相对移动事件（MOUSEEVENTF_MOVE）。
+# ------------------------------------------------------------------------------
+
+MOUSEEVENTF_MOVE = 0x0001  # 相对移动标志（不要带 MOUSEEVENTF_ABSOLUTE）
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    """Windows SendInput 用的鼠标事件结构体（见 MSDN MOUSEINPUT）。"""
+    _fields_ = [
+        ("dx", wintypes.LONG),            # 相对位移 X（正数向右）
+        ("dy", wintypes.LONG),            # 相对位移 Y（正数向下）
+        ("mouseData", wintypes.DWORD),    # 滚轮数据，这里不用
+        ("dwFlags", wintypes.DWORD),      # 事件类型，这里是 MOUSEEVENTF_MOVE
+        ("time", wintypes.DWORD),         # 时间戳，0 = 系统自动填
+        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),  # 附加信息，不用
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    """SendInput 的通用输入结构体，这里只用鼠标那一路。"""
+    class _UNION(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT)]
+
+    _anonymous_ = ("u",)
+    _fields_ = [
+        ("type", wintypes.DWORD),  # 0 = 鼠标事件
+        ("u", _UNION),
+    ]
+
+
 def move_rs(dx: int, dy: int) -> None:
     """
     等价于 MoveRS dx, dy：鼠标相对移动。
+
     在游戏里就是「转视角」——原脚本用它把人转向黄标。
+    必须走 SendInput 的相对移动，绝对不能改成移动光标到某个坐标，
+    否则游戏不认（原因见上面那段说明）。
     """
-    pydirectinput.moveRel(dx, dy)
+    event = _INPUT(
+        type=0,
+        u=_INPUT._UNION(
+            mi=_MOUSEINPUT(
+                dx=dx,
+                dy=dy,
+                mouseData=0,
+                dwFlags=MOUSEEVENTF_MOVE,
+                time=0,
+                dwExtraInfo=None,
+            )
+        ),
+    )
+    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
+    if sent != 1:
+        # 正常情况不会失败；失败通常是权限不足（脚本没用管理员身份运行）
+        log("警告：转视角事件发送失败（可能不是管理员权限）")
 
 
 def left_down() -> None:
@@ -385,7 +474,7 @@ def 判断是否进入游戏() -> bool:
     返回 False -> 30 秒内一直没检测到（原脚本也只是打印一行分隔线，然后继续）
     """
     for _ in range(300):
-        if get_pixel_color(969, 57) == COLOR_ENTERED_GAME:
+        if color_matches(get_pixel_color(969, 57), COLOR_ENTERED_GAME):
             log("已进入游戏，等待上飞机")
             return True
         delay(1000)
@@ -404,7 +493,7 @@ def 判断是否可跳伞() -> bool:
     for _ in range(200):
         c1 = get_pixel_color(1096, 661)
         c2 = get_pixel_color(1146, 663)
-        if c1 == COLOR_PLANE_READY_1 and c2 == COLOR_PLANE_READY_2:
+        if color_matches(c1, COLOR_PLANE_READY_1) and color_matches(c2, COLOR_PLANE_READY_2):
             log("可以跳伞了")
             return True
         delay(1000)
@@ -422,7 +511,7 @@ def 判断是否死亡() -> bool:
     """
     c1 = get_pixel_color(113, 182)
     c2 = get_pixel_color(373, 195)
-    if c1 == COLOR_DEAD_1 and c2 == COLOR_DEAD_2:
+    if color_matches(c1, COLOR_DEAD_1) and color_matches(c2, COLOR_DEAD_2):
         log("死掉了...")
         return True
     return False

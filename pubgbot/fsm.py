@@ -33,6 +33,7 @@ class WorldView:
 class Command:
     kind: str
     arg: int | tuple[int, int] | None = None
+    reason: str = ""
 
 
 class BotFsm:
@@ -130,7 +131,7 @@ class BotFsm:
             return self._running_tick(world, now_ms)
         if self._mode == "prone":
             if not self._locked and self._needs_new_mark(world):
-                return self._start_marking(now_ms)
+                return self._start_marking(now_ms, f"outside_zone dist_ratio={world.dist_ratio}")
             return self._prone_tick(world, now_ms)
 
         # idle：刚落地或刚从标记回来
@@ -139,7 +140,7 @@ class BotFsm:
             self._enter_prone()
             return self._prone_tick(world, now_ms)
         if world.dist_ratio > 1 - self._zone_margin:
-            return self._start_marking(now_ms)
+            return self._start_marking(now_ms, f"outside_zone dist_ratio={world.dist_ratio:.2f}")
         self._enter_prone()
         return self._prone_tick(world, now_ms)
 
@@ -156,14 +157,14 @@ class BotFsm:
             return False
         return now_ms - self._last_mark_ms >= self._p.value("remark_interval_ms")
 
-    def _start_marking(self, now_ms: int) -> Command:
+    def _start_marking(self, now_ms: int, reason: str = "need_new_mark") -> Command:
         self._mode = "marking"
-        log.info("[FSM] 开地图标点 (t=%dms)", now_ms)
-        return Command("open_map")
+        log.info("[FSM] 开地图标点 (t=%dms, %s)", now_ms, reason)
+        return Command("open_map", None, reason)
 
     def _prone_tick(self, world: WorldView, now_ms: int) -> Command:
         if not self._locked and self._remark_due(now_ms):
-            return self._start_marking(now_ms)
+            return self._start_marking(now_ms, "remark_interval elapsed")
         interval = self._opt("micro_move_interval_ms")
         if self._last_micro is None:
             self._last_micro = now_ms
@@ -208,8 +209,10 @@ class BotFsm:
 
         step = steer_pixels(world.marker_x, world.compass_center_x, self._dead_zone, self._steer_step)
         if step != 0:
-            return Command("turn", step)
-        return Command("press_w")
+            return Command(
+                "turn", step, f"marker_x={world.marker_x} center_x={world.compass_center_x}"
+            )
+        return Command("press_w", None, f"aligned dist_ratio={world.dist_ratio}")
 
     def _stuck_check(self, world: WorldView, now_ms: int) -> bool:
         if world.dist_ratio is None:

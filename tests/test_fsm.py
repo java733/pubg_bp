@@ -91,3 +91,12 @@ def test_health_drop_releases_and_prones(cfg):
     f = BotFsm(cfg)
     hurt = WorldView(marker_x=50, compass_center_x=50, dist_ratio=1.2, health_drop_fast=True)
     assert f.tick(obs(VisualState.GROUNDED, 0), hurt, 0).kind == "release_w"
+
+
+def test_map_state_not_recognized_does_not_spam_m(cfg):
+    f = BotFsm(cfg)
+    assert f.tick(obs(VisualState.GROUNDED, 0), W, 0).kind == "open_map"
+    for now in range(100, 1400, 100):
+        assert f.tick(obs(VisualState.GROUNDED, 0), W, now).kind == "idle"
+    assert f.tick(obs(VisualState.GROUNDED, 0), W, 1500).kind == "idle"
+    assert f.tick(obs(VisualState.GROUNDED, 0), W, 1600).kind == "open_map"

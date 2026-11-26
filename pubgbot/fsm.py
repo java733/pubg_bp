@@ -129,6 +129,27 @@ class BotFsm:
 
         if self._mode == "running":
             return self._running_tick(world, now_ms)
+        if self._mode == "marking":
+            # 按了 M 但识别器没跟上（地图模板未标定/加载慢）：等标记超时再算失败，
+            # 否则会每帧狂按 M 反复开关地图。
+            if (
+                self._mark_wait_since is not None
+                and now_ms - self._mark_wait_since < self._p.value("marking_timeout_ms")
+            ):
+                return Command("idle", None, "waiting_for_map_state")
+            self._mark_fail_count += 1
+            limit = self._p.int_value("mark_fail_limit")
+            log.warning(
+                "[FSM] 按 M 后没有识别到地图状态 (%d/%d) -> 检查 anchors.map_open 模板",
+                self._mark_fail_count,
+                limit,
+            )
+            self._mark_wait_since = None
+            if self._mark_fail_count >= limit:
+                self._lock_prone()
+            else:
+                self._mode = "idle"
+            return Command("idle", None, "map_state_not_recognized")
         if self._mode == "prone":
             if not self._locked and self._needs_new_mark(world):
                 return self._start_marking(now_ms, f"outside_zone dist_ratio={world.dist_ratio}")
@@ -159,6 +180,7 @@ class BotFsm:
 
     def _start_marking(self, now_ms: int, reason: str = "need_new_mark") -> Command:
         self._mode = "marking"
+        self._mark_wait_since = now_ms
         log.info("[FSM] 开地图标点 (t=%dms, %s)", now_ms, reason)
         return Command("open_map", None, reason)
 

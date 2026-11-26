@@ -740,8 +740,8 @@ def 主流程() -> None:
     else:
         log("===========================")
 
-    # 原脚本：Delay 30000，然后判断是否可跳伞
-    delay(30000)
+    # 原脚本：Delay 40000，然后判断是否可跳伞
+    delay(40000)
     if 判断是否可跳伞():
         stats = 2
 
@@ -754,11 +754,11 @@ def 主流程() -> None:
 
         # ---- 第二步：跳伞 ----
         key_press("f")     # 跳伞（离开飞机）
-        delay(753)
+        delay(364)
         key_down("w")      # 按住 W 往前飞
         delay(21381)       # 自由落体 / 平飞
         key_down("shift")  # 按住 Shift 加速垂直下落
-        delay(12660)
+        delay(15660)
         key_up("shift")
         delay(1136)
         key_up("w")

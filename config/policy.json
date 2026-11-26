@@ -1,5 +1,38 @@
 {
   "version": 1,
+  "_comments": {
+    "version": "配置结构版本号，目前固定为 1；仅用于标识格式，不影响运行。",
+    "_note": "旧版说明字段，保留兼容；所有时间单位仍为毫秒(ms)。",
+    "values": {
+      "_self": "全局策略参数。除特别标注外，所有时间类参数单位都是毫秒(ms)；修改后无需重新标定 ROI。",
+      "frame_interval_ms": "主循环每帧间隔（80ms ≈ 12.5 FPS）。越小反应越快，但 CPU/GPU 占用更高。",
+      "template_threshold": "预留的全局模板阈值；当前版本实际读取 anchors.<name>.threshold，此项暂不生效。",
+      "vote_frames": "状态投票窗口：连续多少帧识别为同一状态才确认切换，用于抵抗单帧误判。",
+      "min_dwell_ms": "状态最短停留时间；短于该时长的抖动切换会被忽略。",
+      "min_frame_mean": "帧平均亮度低于该值视为黑屏/无效帧（游戏最小化、锁屏、截屏失败）。",
+      "dead_zone_px": "转向死区：黄标与准星的水平差小于该像素数就不转身，防止左右抖动。",
+      "steer_step_px": "每次转向移动的像素步长，越大转得越快但越容易转过头。",
+      "zone_margin_factor": "进圈安全余量：dist_ratio <= 1 - 该值 视为已在圈内。0.08 表示离圈边还留 8% 半径。",
+      "jump_delay_ms": "进入 PLANE 状态后等待多久按 F 跳伞。",
+      "start_click_cooldown_ms": "开始按钮 / 返回按钮两次点击之间的最小间隔，防止连点。",
+      "remark_interval_ms": "两次重新开图标点之间的间隔（默认 20 秒一次）。",
+      "marking_timeout_ms": "开图后等待“识别到地图并完成标点”的超时；超时记一次标点失败。",
+      "marker_lost_scan_ms": "跑圈时黄标持续丢失多久后，开始原地扫视寻找黄标。",
+      "scan_max_ms": "扫视持续多久仍找不到黄标就放弃，改为趴下等下一轮重新标点。",
+      "stuck_detect_ms": "距圈比例 dist_ratio 连续多久不变化就判定卡住，并尝试转向脱困。",
+      "mark_fail_limit": "标点/开图连续失败多少次后锁定趴下，不再尝试。",
+      "run_fail_limit": "连续卡住多少次后锁定趴下，不再尝试移动。",
+      "micro_move_interval_ms": "趴下时每隔多久做一次微小动作，避免被服务器判定挂机。",
+      "downed_crawl_ms": "倒地后先向前爬多少毫秒，之后改为趴下不动。",
+      "freefall_timeout_ms": "自由落体最长持续时间；超时认为卡在跳伞/地形里，立即松开 W。",
+      "watchdog_ms": "主循环心跳超时：超过该时间没有跑出新帧就安全停止并释放按键。",
+      "session_limit_ms": "单次会话最长运行时间（28800000ms = 8 小时），到点安全停止。",
+      "unknown_alert_ms": "状态持续 UNKNOWN 多久后打印告警，用于发现模板/ROI 问题。",
+      "queue_alert_ms": "状态持续 QUEUE 多久后打印告警（600000ms = 10 分钟），用于发现排队卡住。",
+      "health_drop_window_ms": "血量检测的滑动窗口长度；窗口内比较血条白色占比的峰值。",
+      "health_drop_ratio": "窗口内血条白色占比下降超过该比例（0.05 = 5%）即判定为掉血/被打。"
+    }
+  },
   "_note": "所有时间单位为毫秒。修改后无需重新标定 ROI。",
   "values": {
     "frame_interval_ms": 80,

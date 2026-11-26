@@ -81,10 +81,11 @@ def _check_monitors() -> dict:
         import win32api
 
         monitors = win32api.EnumDisplayMonitors()
+        primary = win32api.MonitorFromPoint((0, 0))
         items = []
-        for i, (handle, _hdc, info) in enumerate(monitors):
-            l, t, r, b = info["Monitor"]
-            items.append(f"{i}: {r - l}x{b - t} @ ({l},{t}){'(主)' if info['Flags'] == 1 else ''}")
+        for i, (handle, _hdc, rect) in enumerate(monitors):
+            l, t, r, b = rect
+            items.append(f"{i}: {r - l}x{b - t} @ ({l},{t}){' (主)' if handle == primary else ''}")
         return {"name": "显示器", "ok": bool(items), "detail": "; ".join(items) or "无"}
     except Exception as exc:
         return {

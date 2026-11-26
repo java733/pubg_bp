@@ -24,13 +24,14 @@ class Clock:
 
 def build(cfg, clock, fg=True):
     released = []
-    s = Safety(cfg, lambda: released.append(1), clock, lambda: fg)
-    return s, released
+    holder = fg if isinstance(fg, dict) else {"ok": fg}
+    s = Safety(cfg, lambda: released.append(1), clock, lambda: holder["ok"])
+    return s, released, holder
 
 
 def test_watchdog_triggers_release(cfg):
     c = Clock()
-    s, rel = build(cfg, c)
+    s, rel, _ = build(cfg, c)
     s.start()
     s.heartbeat()
     c.t = 2001
@@ -41,24 +42,30 @@ def test_watchdog_triggers_release(cfg):
 
 def test_session_limit_stops(cfg):
     c = Clock()
-    s, rel = build(cfg, c)
+    s, rel, _ = build(cfg, c)
     s.start()
     c.t = 28800001
     with pytest.raises(SafetyStop, match="session"):
         s.check()
 
 
-def test_foreground_lost_stops(cfg):
+def test_foreground_lost_pauses_instead_of_stopping(cfg):
     c = Clock()
-    s, rel = build(cfg, c, fg=False)
+    s, rel, fg = build(cfg, c, fg=False)
     s.start()
-    with pytest.raises(SafetyStop, match="foreground"):
-        s.check()
+    s.check()  # 切出游戏不应抛 SafetyStop
+    assert rel == [1]
+    s.check()  # 持续切出只释放一次
+    assert rel == [1]
+    assert s.stop_requested() is False
+    fg["ok"] = True
+    s.check()  # 回到游戏后继续运行
+    assert s.stop_requested() is False
 
 
 def test_hotkey_stop_releases_once(cfg):
     c = Clock()
-    s, rel = build(cfg, c)
+    s, rel, _ = build(cfg, c)
     s.start()
     s.heartbeat()
     s.request_stop("F12")

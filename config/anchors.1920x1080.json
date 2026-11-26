@@ -1,33 +1,314 @@
 {
   "version": 1,
-  "resolution": [1920, 1080],
-  "calibrated": false,
+  "_comments": {
+    "version": "配置结构版本号，目前固定为 1；仅用于标识格式，不影响运行。",
+    "resolution": "[宽, 高]（像素）。必须与 PUBG 客户区完全一致（当前 1920x1080）；不一致时启动会直接拒绝运行。",
+    "calibrated": "是否已完成标定。true=ROI 和模板都在本机游戏里实际框选过；false=还是占位值，识别结果不可信。",
+    "_note": "旧版说明字段，保留兼容；标定状态请以 calibrated 为准。",
+    "rois": {
+      "_self": "所有矩形区域，格式 [x, y, w, h]，原点为客户区左上角 (0,0)，单位像素。",
+      "full": "整个客户区 (0,0,1920,1080)；downed_banner 锚点用它做全屏搜索。",
+      "compass": "屏幕顶部罗盘条；用于定位黄色路线标记的横坐标 marker_x。",
+      "minimap": "右下角小地图；落地后用它检测白圈并估算玩家距圈心的比例 dist_ratio。",
+      "map": "按 M 打开的大地图区域；用于检测白圈、计算标点坐标。",
+      "health": "底部血条区域；统计白色像素占比来检测掉血。",
+      "lobby_button": "大厅“开始/开始匹配”按钮的点击区域；动作 click_start 会点击它的正中心。",
+      "return_button": "结算界面“返回大厅”按钮的点击区域；动作 click_return 会点击它的正中心。",
+      "roi_lobby_start": "锚点 lobby_start 的模板搜索区域，由 pick_roi.py --name lobby_start 自动写入。",
+      "queue_loading": "旧版匹配界面占位区域，当前 anchors 未引用；实际匹配用 roi_queue_loading。",
+      "spawn_countdown": "旧版出生倒计时占位区域，当前 anchors 未引用；实际匹配用 roi_spawn_countdown。",
+      "plane_prompt": "旧版飞机提示占位区域，当前 anchors 未引用；实际匹配用 roi_plane_prompt。",
+      "freefall_height": "旧版自由落体占位区域，当前 anchors 未引用；实际匹配用 roi_freefall_height。",
+      "grounded_minimap": "旧版落地小地图占位区域，当前 anchors 未引用；实际匹配用 roi_grounded_minimap。",
+      "map_open": "旧版大地图占位区域，当前 anchors 未引用；实际匹配用 roi_map_open。",
+      "result_text": "旧版结算界面占位区域，当前 anchors 未引用；实际匹配用 roi_result_text。",
+      "roi_queue_loading": "锚点 queue_loading 的模板搜索区域，由 pick_roi.py --name queue_loading 自动写入。",
+      "roi_spawn_countdown": "锚点 spawn_countdown 的模板搜索区域，由 pick_roi.py --name spawn_countdown 自动写入。",
+      "roi_plane_prompt": "锚点 plane_prompt 的模板搜索区域，由 pick_roi.py --name plane_prompt 自动写入。",
+      "roi_freefall_height": "锚点 freefall_height 的模板搜索区域，由 pick_roi.py --name freefall_height 自动写入。",
+      "roi_grounded_minimap": "锚点 grounded_minimap 的模板搜索区域，由 pick_roi.py --name grounded_minimap 自动写入。",
+      "roi_map_open": "锚点 map_open 的模板搜索区域，由 pick_roi.py --name map_open 自动写入。",
+      "roi_result_text": "锚点 result_text 的模板搜索区域，由 pick_roi.py --name result_text 自动写入。"
+    },
+    "anchors": {
+      "_self": "视觉锚点列表：每个锚点 = 一张模板图 + 一个搜索 ROI + 一个阈值 + 归属状态；同一状态可配多个锚点一起投票。",
+      "_fields": {
+        "roi": "在 rois 里定义的区域名（字符串）；模板匹配只在这个区域内进行。",
+        "template": "模板文件名，位于 templates/<分辨率>/ 下；使用相对路径。",
+        "threshold": "模板匹配命中阈值（0~1），匹配分数 >= 该值才算命中。",
+        "state": "命中后投票归属的视觉状态，必须是 VisualState 的合法值：LOBBY / QUEUE / SPAWN / PLANE / FREEFALL / GROUNDED / MARKING / DOWNED / RESULT。"
+      },
+      "lobby_start": "大厅里的“开始/开始匹配”按钮片段；命中 = 处于大厅 LOBBY。",
+      "queue_loading": "匹配等待/加载界面的静态片段；命中 = 排队中 QUEUE。",
+      "spawn_countdown": "出生点倒计时界面的静态片段（别框跳动的数字）；命中 = 准备开局 SPAWN。",
+      "plane_prompt": "飞机上“跳伞”提示的静态片段；命中 = 在飞机上 PLANE。",
+      "freefall_height": "自由落体时高度/姿态 HUD 的静态片段（别框变化的数字）；命中 = 跳伞下落 FREEFALL。",
+      "grounded_minimap": "落地后小地图上的固定元素；命中 = 已落地 GROUNDED。",
+      "map_open": "按 M 打开的大地图界面的固定元素；命中 = 正在看地图/标点 MARKING。",
+      "downed_banner": "倒地提示横幅；用 full 全屏搜索，命中 = 倒地 DOWNED。",
+      "result_text": "结算界面的固定标题/文字；命中 = 对局结束 RESULT。"
+    },
+    "hsv": {
+      "_self": "颜色过滤阈值，每项为 [HSV下限, HSV上限]；H 取 0~180（OpenCV 约定），S/V 取 0~255。",
+      "waypoint_yellow": "罗盘上黄色路线标记的颜色范围；用它找 marker_x。",
+      "circle_white": "地图/小地图上白色安全区圆圈的颜色范围；用它找圈心和半径。",
+      "health_white": "血条“有血”部分的白色范围；用白像素占比判断掉血。",
+      "health_red": "血条红色部分范围；当前版本未使用，保留给后续检测。"
+    },
+    "values": {
+      "_self": "算法几何/阈值参数（都不带时间单位）。",
+      "circle_inner_factor": "标点位置取白圈半径的倍数（0.9 = 圈内 90% 处），避免贴着圈边。",
+      "marker_min_pixels": "罗盘区域至少要有这么多黄色像素才认为存在黄标，用于过滤噪点。",
+      "circle_r_min": "白圈半径搜索下限（像素），太小会被当噪点。",
+      "circle_r_max": "白圈半径搜索上限（像素）。",
+      "scan_step_px": "跟丢黄标时原地扫视，每次转身的像素步长。"
+    }
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "calibrated": true,
   "_note": "calibrated=false 表示 ROI 仍是占位值。请在游戏机上用 python tools/pick_roi.py 逐个标定后再改为 true。",
   "rois": {
-    "full": [0, 0, 1920, 1080],
-    "compass": [560, 6, 800, 42],
-    "minimap": [1592, 776, 320, 296],
-    "map": [400, 40, 1120, 1000],
-    "health": [48, 990, 460, 26],
-    "lobby_button": [760, 940, 400, 80],
-    "return_button": [760, 940, 400, 80]
+    "full": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "compass": [
+      560,
+      6,
+      800,
+      42
+    ],
+    "minimap": [
+      1592,
+      776,
+      320,
+      296
+    ],
+    "map": [
+      400,
+      40,
+      1120,
+      1000
+    ],
+    "health": [
+      48,
+      990,
+      460,
+      26
+    ],
+    "lobby_button": [
+      219,
+      952,
+      68,
+      30
+    ],
+    "return_button": [
+      108,
+      1004,
+      118,
+      27
+    ],
+    "roi_lobby_start": [
+      174,
+      951,
+      121,
+      33
+    ],
+    "queue_loading": [
+      1072,
+      979,
+      69,
+      30
+    ],
+    "spawn_countdown": [
+      957,
+      21,
+      10,
+      12
+    ],
+    "plane_prompt": [
+      1079,
+      618,
+      69,
+      25
+    ],
+    "freefall_height": [
+      483,
+      706,
+      50,
+      35
+    ],
+    "grounded_minimap": [
+      1625,
+      756,
+      267,
+      296
+    ],
+    "map_open": [
+      432,
+      17,
+      1064,
+      1049
+    ],
+    "result_text": [
+      65,
+      150,
+      349,
+      50
+    ],
+    "roi_queue_loading": [
+      1082,
+      982,
+      46,
+      26
+    ],
+    "roi_spawn_countdown": [
+      873,
+      571,
+      176,
+      26
+    ],
+    "roi_plane_prompt": [
+      1079,
+      620,
+      70,
+      22
+    ],
+    "roi_freefall_height": [
+      492,
+      721,
+      27,
+      11
+    ],
+    "roi_grounded_minimap": [
+      1752,
+      915,
+      11,
+      13
+    ],
+    "roi_map_open": [
+      681,
+      29,
+      49,
+      23
+    ],
+    "roi_result_text": [
+      108,
+      1006,
+      106,
+      21
+    ]
   },
   "anchors": {
-    "lobby_start": {"roi": "lobby_button", "template": "lobby_start.png", "threshold": 0.85, "state": "LOBBY"},
-    "queue_loading": {"roi": "full", "template": "queue_loading.png", "threshold": 0.85, "state": "QUEUE"},
-    "spawn_countdown": {"roi": "full", "template": "spawn_countdown.png", "threshold": 0.85, "state": "SPAWN"},
-    "plane_prompt": {"roi": "full", "template": "plane_prompt.png", "threshold": 0.85, "state": "PLANE"},
-    "freefall_height": {"roi": "full", "template": "freefall_height.png", "threshold": 0.85, "state": "FREEFALL"},
-    "grounded_minimap": {"roi": "minimap", "template": "grounded_minimap.png", "threshold": 0.85, "state": "GROUNDED"},
-    "map_open": {"roi": "full", "template": "map_open.png", "threshold": 0.85, "state": "MARKING"},
-    "downed_banner": {"roi": "full", "template": "downed_banner.png", "threshold": 0.85, "state": "DOWNED"},
-    "result_text": {"roi": "full", "template": "result_text.png", "threshold": 0.85, "state": "RESULT"}
+    "lobby_start": {
+      "roi": "roi_lobby_start",
+      "template": "lobby_start.png",
+      "threshold": 0.85,
+      "state": "LOBBY"
+    },
+    "queue_loading": {
+      "roi": "roi_queue_loading",
+      "template": "queue_loading.png",
+      "threshold": 0.85,
+      "state": "QUEUE"
+    },
+    "spawn_countdown": {
+      "roi": "roi_spawn_countdown",
+      "template": "spawn_countdown.png",
+      "threshold": 0.85,
+      "state": "SPAWN"
+    },
+    "plane_prompt": {
+      "roi": "roi_plane_prompt",
+      "template": "plane_prompt.png",
+      "threshold": 0.85,
+      "state": "PLANE"
+    },
+    "freefall_height": {
+      "roi": "roi_freefall_height",
+      "template": "freefall_height.png",
+      "threshold": 0.85,
+      "state": "FREEFALL"
+    },
+    "grounded_minimap": {
+      "roi": "roi_grounded_minimap",
+      "template": "grounded_minimap.png",
+      "threshold": 0.85,
+      "state": "GROUNDED"
+    },
+    "map_open": {
+      "roi": "roi_map_open",
+      "template": "map_open.png",
+      "threshold": 0.85,
+      "state": "MARKING"
+    },
+    "downed_banner": {
+      "roi": "full",
+      "template": "downed_banner.png",
+      "threshold": 0.85,
+      "state": "DOWNED"
+    },
+    "result_text": {
+      "roi": "roi_result_text",
+      "template": "result_text.png",
+      "threshold": 0.85,
+      "state": "RESULT"
+    }
   },
   "hsv": {
-    "waypoint_yellow": [[18, 90, 120], [38, 255, 255]],
-    "circle_white": [[0, 0, 200], [180, 40, 255]],
-    "health_white": [[0, 0, 200], [180, 30, 255]],
-    "health_red": [[0, 120, 80], [10, 255, 255]]
+    "waypoint_yellow": [
+      [
+        18,
+        90,
+        120
+      ],
+      [
+        38,
+        255,
+        255
+      ]
+    ],
+    "circle_white": [
+      [
+        0,
+        0,
+        200
+      ],
+      [
+        180,
+        40,
+        255
+      ]
+    ],
+    "health_white": [
+      [
+        0,
+        0,
+        200
+      ],
+      [
+        180,
+        30,
+        255
+      ]
+    ],
+    "health_red": [
+      [
+        0,
+        120,
+        80
+      ],
+      [
+        10,
+        255,
+        255
+      ]
+    ]
   },
   "values": {
     "circle_inner_factor": 0.9,

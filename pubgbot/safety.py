@@ -35,6 +35,7 @@ class Safety:
         self._stop = False
         self._stop_reason = ""
         self._released = False
+        self._paused = False
         self._armed = False
         self._hotkeys: list[object] = []
 
@@ -103,8 +104,17 @@ class Safety:
             raise SafetyStop(f"stop requested: {self._stop_reason}")
 
         if not self._foreground_ok():
-            self._release_once()
-            raise SafetyStop("foreground lost -> 游戏不在前台（切出/锁屏），已停止且未发送任何输入")
+            # 切出游戏（看日志/回消息）不等于要收工：先释放按键并暂停输入，
+            # 主循环继续跑；回到游戏后自动恢复。只有 F12、看门狗、会话上限才真正停止。
+            if not self._paused:
+                self._paused = True
+                log.warning(
+                    "[SAFE] 游戏不在前台 -> 已释放按键并暂停输入，脚本继续运行（回到游戏后自动恢复）"
+                )
+                self._release_quietly()
+        elif self._paused:
+            self._paused = False
+            log.info("[SAFE] 游戏回到前台 -> 恢复输入")
 
         started = self._started_ms if self._started_ms is not None else now
         session_limit = self._cfg.policy.value("session_limit_ms")
@@ -126,9 +136,13 @@ class Safety:
         if self._released:
             return
         self._released = True
+        self._release_quietly()
+
+    def _release_quietly(self) -> None:
+        """调用释放回调；释放本身失败也不能吞掉原因。可在暂停/恢复时重复调用。"""
         try:
             self._release()
-        except Exception as exc:  # 释放本身失败也不能吞掉原因
+        except Exception as exc:
             log.error("[ERR] safety: 释放按键失败: %s -> 请手动按一次 W/S/A/D 确认没有卡键", exc)
 
     def _on_start(self) -> None:

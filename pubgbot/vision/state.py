@@ -57,6 +57,27 @@ class StateRecognizer:
                 "[VISION] calibrated=false：ROI 仍是占位值，识别结果不可信"
                 " -> 先在游戏机上运行 python tools/pick_roi.py 并置 calibrated=true"
             )
+        missing = self._missing_templates()
+        if missing:
+            log.warning(
+                "[VISION] 有 %d 个锚点缺少模板，对应状态暂时无法识别: %s"
+                " -> 开游戏到对应界面后逐个执行 python tools/pick_roi.py --name <锚点名>",
+                len(missing),
+                ", ".join(missing),
+            )
+
+    def _missing_templates(self) -> list[str]:
+        """启动时一次性列出缺模板的锚点，避免每帧刷 ERROR。"""
+        missing: list[str] = []
+        for name, spec in self._cfg.anchors.anchors.items():
+            if spec.template is None:
+                missing.append(name)
+                continue
+            path = Path(spec.template)
+            path = path if path.is_absolute() else self._templates_dir / path
+            if not path.exists():
+                missing.append(name)
+        return missing
 
     @property
     def state(self) -> VisualState:
@@ -72,7 +93,7 @@ class StateRecognizer:
             except FileNotFoundError as exc:
                 if name not in self._warned_anchors:
                     self._warned_anchors.add(name)
-                    log.error("[ERR] vision/state: %s -> 该锚点永远不命中；请用 pick_roi.py 生成模板", exc)
+                    log.debug("[VISION] 锚点 %s 无可用模板，已跳过: %s", name, exc)
                 scores[name] = 0.0
                 continue
             scores[name] = round(hit.score, 4)

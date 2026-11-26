@@ -30,10 +30,7 @@
     "health_red": [[0, 120, 80], [10, 255, 255]]
   },
   "values": {
-    "dead_zone_px": 6,
-    "steer_step_px": 8,
     "circle_inner_factor": 0.9,
-    "zone_margin_factor": 0.08,
     "marker_min_pixels": 12,
     "circle_r_min": 24,
     "circle_r_max": 520,

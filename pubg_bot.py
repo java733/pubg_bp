@@ -33,8 +33,12 @@ PUBG 挂机脚本（Python 版）—— 按键精灵 PC 版源码的 1:1 移植
 --------------------------------------------------------------------------------
 三、紧急停止
 --------------------------------------------------------------------------------
-    Ctrl + C        -> 停止脚本，并且会把还按着的键（W / Shift）松开
+    F12             -> 随时停止（全局热键，游戏里直接按就行，不用切窗口）
+                       停止后会自动松开按住的键（W / Shift）
+    Ctrl + C        -> 在命令行窗口里也能停
     鼠标甩到屏幕左上角 (0,0) -> pydirectinput 的 FAILSAFE 会抛异常，脚本停止
+
+    想换停止键：改下面「可调参数」里的 STOP_HOTKEY（可用 "f12"、"ctrl+q" 等）
 
 --------------------------------------------------------------------------------
 四、按键精灵命令 -> Python 写法 对照表
@@ -65,6 +69,7 @@ PUBG 挂机脚本（Python 版）—— 按键精灵 PC 版源码的 1:1 移植
 import ctypes
 import ctypes.wintypes as wintypes
 import sys
+import threading
 import time
 
 import mss          # 截屏取色（比一个点一个点调系统 API 快很多）
@@ -143,12 +148,63 @@ DEATH_CLICKS = [
 
 
 # ==============================================================================
-# 一、基础工具：日志 / 延时
+# 一、基础工具：日志 / 延时 / 全局停止热键
 # ==============================================================================
 
+# 全局停止热键：按一下就让脚本停下来（不需要切回命令行窗口）
+STOP_HOTKEY = "f12"
+
+
+class StopRequested(Exception):
+    """按下停止热键后抛出的信号，用来从任意位置跳出主流程。"""
+
+
+# 用一个「事件」做线程间的开关：F12 的回调线程负责 set()，
+# delay() 里不停检查它，一旦被 set 就抛 StopRequested 结束流程。
+# （set() 和 is_set() 都是线程安全的）
+_stop_event = threading.Event()
+
+
+def _request_stop() -> None:
+    """F12 被按下时由 keyboard 库在后台线程调用。"""
+    _stop_event.set()
+
+
+def install_stop_hotkey() -> None:
+    """
+    注册全局停止热键（默认 F12）。
+
+    为什么用 keyboard 库：它装的是系统级键盘钩子，无论当前焦点在游戏里
+    还是在浏览器里，按键都能被收到，不需要切回命令行窗口。
+
+    注册失败（极少见，通常是权限问题）时只打警告，脚本照常运行，
+    你还能用 Ctrl+C 停止。
+    """
+    try:
+        import keyboard  # 延迟导入：这个库一导入就开始装钩子，放到这里更可控
+
+        keyboard.add_hotkey(STOP_HOTKEY, _request_stop)
+        log(f"已注册停止热键：按 {STOP_HOTKEY.upper()} 可随时停止脚本")
+    except Exception as exc:
+        log(f"警告：注册停止热键失败（{exc}），请改用 Ctrl+C 停止")
+
+
 def delay(ms: int) -> None:
-    """等价于按键精灵的 Delay：暂停 ms 毫秒。"""
-    time.sleep(ms / 1000.0)
+    """
+    等价于按键精灵的 Delay：暂停 ms 毫秒。
+
+    和普通 time.sleep 的区别：这里把长等待切成 50ms 一小段，
+    每段之间检查一次「是否按了停止热键」，这样哪怕正在等 25 秒的结算动画，
+    按 F12 也能在 50ms 内停下来。
+    """
+    end_time = time.monotonic() + ms / 1000.0
+    while True:
+        if _stop_event.is_set():
+            raise StopRequested  # 有人按了停止热键，直接跳出流程
+        remaining = end_time - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.05))
 
 
 def log(msg: str) -> None:
@@ -739,11 +795,16 @@ def main() -> None:
     # 正常模式：先把 DPI 感知开起来，再做任何坐标相关的事
     enable_dpi_awareness()
 
+    # 注册全局停止热键（F12），这样不用切回命令行窗口就能停
+    install_stop_hotkey()
+
     try:
         while True:
             主流程()
             if not RUN_FOREVER:
                 break
+    except StopRequested:
+        log(f"已停止（你按了 {STOP_HOTKEY.upper()}）")
     except KeyboardInterrupt:
         log("已手动停止（Ctrl+C）")
     finally:

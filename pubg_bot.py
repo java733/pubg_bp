@@ -777,13 +777,14 @@ def 主流程() -> None:
     while stats == 3:
         if 判断是否死亡():
             # 已经死亡：点掉结算界面，退回大厅
+            # DEATH_CLICKS 里存的是 (x, y) 坐标元组，用 * 展开成两个参数
             delay(1000)
-            move_and_click(DEATH_CLICKS[0])
-            move_and_click(DEATH_CLICKS[1])
+            move_and_click(*DEATH_CLICKS[0])
+            move_and_click(*DEATH_CLICKS[1])
             delay(25000)
-            move_and_click(DEATH_CLICKS[2])
+            move_and_click(*DEATH_CLICKS[2])
             delay(5000)
-            move_and_click(DEATH_CLICKS[3])
+            move_and_click(*DEATH_CLICKS[3])
             delay(3000)
             stats = 0
         else:

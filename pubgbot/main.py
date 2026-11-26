@@ -120,6 +120,10 @@ def run(
     alerted: set[tuple[str, str]] = set()
     last_state: str | None = None
     state_since = 0
+    invalid_streak = 0
+    invalid_limit = 30
+    if cfg is not None:
+        invalid_limit = max(1, int(cfg.policy.values.get("max_invalid_frames", 30)))
 
     try:
         while max_frames is None or frames < max_frames:
@@ -130,10 +134,25 @@ def run(
             try:
                 gate(frame)
             except FrameInvalid as exc:
-                log.warning("[LOOP] 丢弃无效帧: %s", exc)
-                logger.write({"event": "invalid_frame", "ts_ms": now, "reason": str(exc)})
+                invalid_streak += 1
+                log.warning(
+                    "[LOOP] 丢弃无效帧 (%d/%d): %s", invalid_streak, invalid_limit, exc
+                )
+                logger.write(
+                    {
+                        "event": "invalid_frame",
+                        "ts_ms": now,
+                        "reason": str(exc),
+                        "streak": invalid_streak,
+                    }
+                )
+                if invalid_streak >= invalid_limit:
+                    raise SafetyStop(
+                        f"连续 {invalid_streak} 帧无效 -> 捕获/窗口异常: {exc}"
+                    ) from exc
                 safety.heartbeat()
                 continue
+            invalid_streak = 0
 
             obs: Observation = recognizer.observe(frame, now)
             world = (
@@ -192,6 +211,11 @@ def run(
         log.warning("[LOOP] 收到 Ctrl+C")
         stops.append("KeyboardInterrupt")
         logger.write({"event": "stop", "ts_ms": clock(), "reason": "KeyboardInterrupt"})
+    except Exception as exc:  # 捕获/识别/动作层任何未预期异常都必须收口，不能裸 traceback 退出
+        log.exception("[LOOP] 未预期异常 -> 停止")
+        reason = f"{type(exc).__name__}: {exc}"
+        stops.append(reason)
+        logger.write({"event": "stop", "ts_ms": clock(), "reason": reason})
     finally:
         executor.release_all()
         logger.write({"event": "shutdown", "ts_ms": clock(), "frames": frames})
@@ -265,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client = win.get_client_rect(hwnd)
         validate_resolution(client, cfg)
+        # 截屏区域是客户区与显示器的交集；窗口部分在屏幕外时尺寸会变小，必须拒绝启动
+        validate_resolution(win.compute_capture_region(client, win.monitor_rect_for(hwnd)), cfg)
     except ResolutionMismatch as exc:
         print(f"[ERR] main: {exc}")
         return 3
@@ -284,55 +310,73 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ERR] main: {exc}")
         return 1
 
-    gate = FrameGate(cfg.anchors.resolution, cfg.policy.value("min_frame_mean"))
-    recognizer = StateRecognizer(cfg, TEMPLATES_DIR)
-    fsm = BotFsm(cfg)
-    builder = WorldBuilder(cfg, HealthTracker(cfg))
-    backend = NullExecutor() if args.observe else PyDirectBackend()
-    executor = (
-        NullExecutor()
-        if args.observe
-        else ActionExecutor(backend, cfg, lambda: win.is_foreground(hwnd))
-    )
-    logger = JsonlLogger(Path(args.log))
+    # 组件初始化会读取大量配置键：缺键/非法值必须给出可读提示，而不是裸 traceback
+    try:
+        gate = FrameGate(cfg.anchors.resolution, cfg.policy.value("min_frame_mean"))
+        recognizer = StateRecognizer(cfg, TEMPLATES_DIR)
+        fsm = BotFsm(cfg)
+        builder = WorldBuilder(cfg, HealthTracker(cfg))
+        backend = NullExecutor() if args.observe else PyDirectBackend()
+        executor = (
+            NullExecutor()
+            if args.observe
+            else ActionExecutor(
+                backend,
+                cfg,
+                lambda: win.is_foreground(hwnd),
+                origin_provider=lambda: win.get_client_rect(hwnd),
+            )
+        )
+        logger = JsonlLogger(Path(args.log))
+    except ConfigError as exc:
+        print(f"[ERR] main: 配置缺少或取值非法: {exc} -> 请检查 config/policy.json 与 anchors")
+        return 2
+    except Exception as exc:
+        print(f"[ERR] main: 初始化失败: {exc}")
+        return 1
     clock = lambda: int(time.monotonic() * 1000)
 
     safety = Safety(cfg, executor.release_all, clock, lambda: win.is_foreground(hwnd))
-    safety.install_hotkeys()
-    if args.autostart:
-        safety.arm()
-    else:
-        safety.start()
-        if not args.observe:
-            log.warning("[MAIN] 等待按 F10 开始执行（在此之前不会发送任何按键）；F12 急停")
+    try:
+        safety.install_hotkeys()
+        if args.autostart:
+            safety.arm()
         else:
-            log.info("[MAIN] 观察器模式无需 F10，直接开始记录")
-    loop_executor = executor if args.observe else ArmedExecutor(executor, safety)
+            safety.start()
+            if not args.observe:
+                log.warning("[MAIN] 等待按 F10 开始执行（在此之前不会发送任何按键）；F12 急停")
+            else:
+                log.info("[MAIN] 观察器模式无需 F10，直接开始记录")
+        loop_executor = executor if args.observe else ArmedExecutor(executor, safety)
 
-    log.info("[MAIN] 开始循环：F12 急停，Ctrl+C 退出，日志 %s", args.log)
-    result = run(
-        source.grab,
-        gate.validate,
-        recognizer,
-        fsm,
-        loop_executor,
-        safety,
-        logger,
-        clock,
-        max_frames=args.max_frames,
-        interval_ms=cfg.policy.int_value("frame_interval_ms"),
-        world_builder=builder.build,
-        cfg=cfg,
-    )
-    logger.close()
-    safety.shutdown()
-    log.info(
-        "[MAIN] 结束：frames=%d states=%s stops=%s",
-        result["frames"],
-        result["states"],
-        result["stops"],
-    )
-    return 0
+        log.info("[MAIN] 开始循环：F12 急停，Ctrl+C 退出，日志 %s", args.log)
+        result = run(
+            source.grab,
+            gate.validate,
+            recognizer,
+            fsm,
+            loop_executor,
+            safety,
+            logger,
+            clock,
+            max_frames=args.max_frames,
+            interval_ms=cfg.policy.int_value("frame_interval_ms"),
+            world_builder=builder.build,
+            cfg=cfg,
+        )
+        log.info(
+            "[MAIN] 结束：frames=%d states=%s stops=%s",
+            result["frames"],
+            result["states"],
+            result["stops"],
+        )
+        return 0
+    finally:
+        # 任何退出路径（异常/热键/正常结束）都必须收掉日志与热键、释放按键
+        try:
+            logger.close()
+        finally:
+            safety.shutdown()
 
 
 if __name__ == "__main__":

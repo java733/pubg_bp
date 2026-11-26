@@ -1,4 +1,9 @@
-"""世界视图：把帧里的罗盘黄标、白圈、血量变成 FSM 可用的 WorldView。"""
+"""世界视图：把帧里的罗盘黄标、白圈、血量变成 FSM 可用的 WorldView。
+
+距离比例 dist_ratio（玩家到圈心的距离 / 圈半径）优先用大地图计算：
+地图按玩家居中打开，圆心/半径与玩家位置在同一坐标系里，比例与地图缩放无关。
+小地图只在确实检测到圈时做精化；看不见圈时不会把地图来源的距离抹掉。
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,11 @@ from .vision.compass import find_marker_x
 from .vision.state import VisualState
 
 log = logging.getLogger(__name__)
+
+# 这些状态意味着上一局已结束/新一局开始：上一局的圈与标点必须失效
+_RESET_STATES = frozenset(
+    {VisualState.LOBBY, VisualState.QUEUE, VisualState.SPAWN, VisualState.RESULT}
+)
 
 
 class HealthTracker:
@@ -75,66 +85,122 @@ class WorldBuilder:
         self._map_roi = cfg.anchors.roi("map")
         self._minimap = cfg.anchors.roi("minimap")
         self._circle_lo, self._circle_hi = cfg.anchors.hsv_range("circle_white")
-        self._r_min = int(cfg.anchors.value("circle_r_min"))
-        self._r_max = int(cfg.anchors.value("circle_r_max"))
+        self._map_r_min = int(cfg.anchors.value("map_circle_r_min"))
+        self._map_r_max = int(cfg.anchors.value("map_circle_r_max"))
+        self._mini_r_min = int(cfg.anchors.value("minimap_circle_r_min"))
+        self._mini_r_max = int(cfg.anchors.value("minimap_circle_r_max"))
         self._inner = cfg.anchors.value("circle_inner_factor")
+        self._dist_stale_ms = float(cfg.policy.values.get("dist_stale_ms", 15000))
         self._last_mark: tuple[int, int] | None = None
         self._last_dist: float | None = None
+        self._dist_source = ""
+        self._dist_ms = 0
         self._warned_no_circle = False
 
     def build(self, frame: np.ndarray, state: VisualState) -> WorldView:
         now = self._clock()
+        if state in _RESET_STATES:
+            self._reset()
+
         marker_x = find_marker_x(
             frame, self._compass, self._marker_lo, self._marker_hi, self._marker_min_pixels
         )
 
         mark_point: tuple[int, int] | None = None
         if state is VisualState.MARKING:
-            mark_point = self._build_mark_point(frame)
+            mark_point = self._build_mark_point(frame, now)
         elif state in (VisualState.GROUNDED, VisualState.DOWNED):
-            self._update_dist(frame)
+            self._update_dist(frame, now)
 
         health_drop = self._health.update(frame, now)
         return WorldView(
             marker_x=marker_x,
             compass_center_x=self._center_x,
-            dist_ratio=self._last_dist,
+            dist_ratio=self._current_dist(now),
             health_drop_fast=health_drop,
             mark_point=mark_point,
         )
 
     # ---- 内部 ----
 
-    def _build_mark_point(self, frame: np.ndarray) -> tuple[int, int] | None:
+    def _reset(self) -> None:
+        self._last_mark = None
+        self._last_dist = None
+        self._dist_source = ""
+        self._dist_ms = 0
+        self._warned_no_circle = False
+
+    def _build_mark_point(self, frame: np.ndarray, now: int) -> tuple[int, int] | None:
         circle = detect_circle(
-            frame, self._map_roi, self._circle_lo, self._circle_hi, self._r_min, self._r_max
+            frame,
+            self._map_roi,
+            self._circle_lo,
+            self._circle_hi,
+            self._map_r_min,
+            self._map_r_max,
         )
         if circle is None:
+            # 检测失败：旧标点/旧距离立即失效，避免把上一个圈的位置当成新圈
+            self._last_mark = None
+            self._last_dist = None
+            self._dist_source = ""
             if not self._warned_no_circle:
                 self._warned_no_circle = True
                 log.warning(
                     "[WORLD] 地图上没检测到白圈 (ROI=%s) -> 检查 map ROI、色盲设置与 hsv.circle_white",
                     self._map_roi,
                 )
-            return self._last_mark
+            return None
         self._warned_no_circle = False
         player = (self._map_roi.x + self._map_roi.w / 2.0, self._map_roi.y + self._map_roi.h / 2.0)
         point = clamp_to(self._map_roi, nearest_edge_point(player, circle, self._inner))
         if point != self._last_mark:
             log.info(
                 "[WORLD] 白圈 center=(%.0f,%.0f) r=%.0f -> 标点 %s (玩家近似 %s)",
-                circle.cx, circle.cy, circle.r, point, player,
+                circle.cx,
+                circle.cy,
+                circle.r,
+                point,
+                player,
             )
         self._last_mark = point
+        # 地图按玩家居中打开：圆心到地图中心的距离 / 半径，与地图缩放无关
+        if circle.r > 0:
+            self._last_dist = math.hypot(circle.cx - player[0], circle.cy - player[1]) / circle.r
+            self._dist_source = "map"
+            self._dist_ms = now
         return point
 
-    def _update_dist(self, frame: np.ndarray) -> None:
+    def _update_dist(self, frame: np.ndarray, now: int) -> None:
         circle: Circle | None = detect_circle(
-            frame, self._minimap, self._circle_lo, self._circle_hi, self._r_min, self._r_max
+            frame,
+            self._minimap,
+            self._circle_lo,
+            self._circle_hi,
+            self._mini_r_min,
+            self._mini_r_max,
         )
         if circle is None:
+            # 小地图看不见圈（常见于第一圈半径远大于小地图）：只失效小地图来源的值，
+            # 地图来源的值仍可用，等它自然过期。
+            if self._dist_source == "minimap":
+                self._last_dist = None
+                self._dist_source = ""
             return
         cx = self._minimap.x + self._minimap.w / 2.0
         cy = self._minimap.y + self._minimap.h / 2.0
         dist = math.hypot(circle.cx - cx, circle.cy - cy)
-        self._last_dist = dist / circle.r if circle.r > 0 else None
+        if circle.r <= 0:
+            return
+        self._last_dist = dist / circle.r
+        self._dist_source = "minimap"
+        self._dist_ms = now
+
+    def _current_dist(self, now: int) -> float | None:
+        if self._last_dist is None:
+            return None
+        if now - self._dist_ms > self._dist_stale_ms:
+            self._last_dist = None
+            self._dist_source = ""
+            return None
+        return self._last_dist

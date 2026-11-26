@@ -1,6 +1,11 @@
 """状态机与决策：输入观测，输出语义命令。不碰键鼠。
 
 委托给动作层执行命令，因此同一个 FSM 可直接用于观察器模式（空执行器）。
+
+命令分两类：
+- 一次性（MOMENTARY_KINDS）：M/Z 等是 toggle，重复发送会让地图/姿态反复翻转，
+  所以只在状态切换时发一次，由 FSM 的闩锁保证；
+- 电平型（press_w/release_w/turn/scan）：每帧都可以重复，动作层本身幂等。
 """
 
 from __future__ import annotations
@@ -16,6 +21,24 @@ log = logging.getLogger(__name__)
 
 # 卡住时的小角度绕行步长（像素）
 _UNSTICK_STEP_PX = 25
+
+# 一次性命令：动作层每个动作只应执行一次，重复发送会变成 toggle/重复点击
+MOMENTARY_KINDS = frozenset(
+    {
+        "jump",
+        "open_map",
+        "close_map",
+        "mark",
+        "prone",
+        "stand",
+        "click_start",
+        "click_return",
+    }
+)
+
+POSTURE_UNKNOWN = "unknown"
+POSTURE_STANDING = "standing"
+POSTURE_PRONE = "prone"
 
 
 @dataclass(frozen=True)
@@ -35,6 +58,10 @@ class Command:
     arg: int | tuple[int, int] | None = None
     reason: str = ""
 
+    @property
+    def momentary(self) -> bool:
+        return self.kind in MOMENTARY_KINDS
+
 
 class BotFsm:
     def __init__(self, cfg: AppConfig) -> None:
@@ -44,6 +71,7 @@ class BotFsm:
         self._zone_margin = cfg.policy.value("zone_margin_factor")
         self._state = VisualState.UNKNOWN
         self._mode = "idle"
+        self._posture = POSTURE_UNKNOWN
         self._entered_ms = 0
         self._jumped = False
         self._last_click_ms: int | None = None
@@ -51,24 +79,37 @@ class BotFsm:
         self._mark_wait_since: int | None = None
         self._last_mark_ms: int | None = None
         self._mark_fail_count = 0
+        self._map_close_pending = False
+        self._last_map_close_ms: int | None = None
+        self._map_reopen_cooldown = float(self._p.values.get("map_reopen_cooldown_ms", 2000))
         self._lost_since: int | None = None
         self._scan_since: int | None = None
-        self._last_micro: int | None = None
         self._stuck_ref: float | None = None
         self._stuck_since: int | None = None
         self._stuck_count = 0
         self._locked = False
         self._missing: set[str] = set()
+        self._marking_timeout = self._resolve_marking_timeout()
 
     @property
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def posture(self) -> str:
+        return self._posture
+
     def tick(self, obs: Observation, world: WorldView, now_ms: int) -> Command:
         if obs.state != self._state:
             self._on_enter(obs.state, now_ms)
         state = obs.state
-        if state in (VisualState.UNKNOWN, VisualState.QUEUE, VisualState.SPAWN):
+        if state is VisualState.UNKNOWN:
+            # 地图可能已经打开、但识别器给不出状态：仍要按超时兜底补关图，
+            # 否则地图会永久停住，后续所有 GROUNDED 判断都失效。
+            if self._mode == "marking":
+                return self._marking_tick(world, now_ms)
+            return Command("idle")
+        if state in (VisualState.QUEUE, VisualState.SPAWN):
             return Command("idle")
         if state is VisualState.LOBBY:
             return self._click_tick(now_ms, "click_start")
@@ -118,39 +159,35 @@ class BotFsm:
         crawl = self._opt("downed_crawl_ms")
         if crawl is not None and now_ms - self._entered_ms < crawl:
             return Command("press_w")
-        return Command("prone")
+        cmd = self._prone_command()
+        return cmd if cmd is not None else Command("idle")
 
     def _grounded_tick(self, world: WorldView, now_ms: int) -> Command:
         if world.health_drop_fast:
-            if self._mode != "prone":
+            self._enter_prone()
+            cmd = self._prone_command()
+            if cmd is not None:
                 log.warning("[FSM] 血量骤降 -> 立即停步趴下")
-                self._enter_prone()
+                return cmd
             return Command("release_w")
+
+        # 本局还没有成功标点：无论小地图能否看见圈，都先开图强制标一次。
+        # 刚关过图时先等冷却，避免 M 连按把地图又翻回去。
+        if (
+            self._last_mark_ms is None
+            and not self._locked
+            and self._mode in ("idle", "prone")
+        ):
+            return self._start_marking(now_ms, "no_mark_this_match")
 
         if self._mode == "running":
             return self._running_tick(world, now_ms)
         if self._mode == "marking":
-            # 按了 M 但识别器没跟上（地图模板未标定/加载慢）：等标记超时再算失败，
-            # 否则会每帧狂按 M 反复开关地图。
-            if (
-                self._mark_wait_since is not None
-                and now_ms - self._mark_wait_since < self._p.value("marking_timeout_ms")
-            ):
-                return Command("idle", None, "waiting_for_map_state")
-            self._mark_fail_count += 1
-            limit = self._p.int_value("mark_fail_limit")
-            log.warning(
-                "[FSM] 按 M 后没有识别到地图状态 (%d/%d) -> 检查 anchors.map_open 模板",
-                self._mark_fail_count,
-                limit,
-            )
-            self._mark_wait_since = None
-            if self._mark_fail_count >= limit:
-                self._lock_prone()
-            else:
-                self._mode = "idle"
-            return Command("idle", None, "map_state_not_recognized")
+            return self._marking_pending_tick(now_ms)
         if self._mode == "prone":
+            cmd = self._prone_command()
+            if cmd is not None:
+                return cmd
             if not self._locked and self._needs_new_mark(world):
                 return self._start_marking(now_ms, f"outside_zone dist_ratio={world.dist_ratio}")
             return self._prone_tick(world, now_ms)
@@ -159,11 +196,13 @@ class BotFsm:
         if world.dist_ratio is None:
             # 小地图上认不出圈：保守趴下，宁可不动也不乱跑
             self._enter_prone()
-            return self._prone_tick(world, now_ms)
+            cmd = self._prone_command()
+            return cmd if cmd is not None else Command("release_w")
         if world.dist_ratio > 1 - self._zone_margin:
             return self._start_marking(now_ms, f"outside_zone dist_ratio={world.dist_ratio:.2f}")
         self._enter_prone()
-        return self._prone_tick(world, now_ms)
+        cmd = self._prone_command()
+        return cmd if cmd is not None else self._prone_tick(world, now_ms)
 
     def _needs_new_mark(self, world: WorldView) -> bool:
         if world.dist_ratio is None:
@@ -179,34 +218,69 @@ class BotFsm:
         return now_ms - self._last_mark_ms >= self._p.value("remark_interval_ms")
 
     def _start_marking(self, now_ms: int, reason: str = "need_new_mark") -> Command:
+        if self._map_reopen_blocked(now_ms):
+            # 刚关过图：等冷却结束再按 M，否则两次 toggle 会互相抵消
+            return Command("idle", None, "map_reopen_cooldown")
         self._mode = "marking"
         self._mark_wait_since = now_ms
         log.info("[FSM] 开地图标点 (t=%dms, %s)", now_ms, reason)
         return Command("open_map", None, reason)
 
+    def _marking_pending_tick(self, now_ms: int) -> Command:
+        """已按 M、但识别器还没切到 MARKING：等待超时，随后无条件补一次 close_map。
+
+        超时没有补关图的话，地图会一直停在打开状态，之后所有 GROUNDED 决策都失效。
+        """
+        if (
+            self._mark_wait_since is not None
+            and now_ms - self._mark_wait_since < self._marking_timeout
+        ):
+            return Command("idle", None, "waiting_for_map_state")
+        self._mark_fail_count += 1
+        limit = self._p.int_value("mark_fail_limit")
+        log.warning(
+            "[FSM] 按 M 后没有识别到地图状态 (%d/%d) -> 补发关图；请检查 anchors.map_open 模板",
+            self._mark_fail_count,
+            limit,
+        )
+        self._mark_wait_since = None
+        self._map_close_pending = False
+        self._last_map_close_ms = now_ms
+        if self._mark_fail_count >= limit:
+            self._lock_prone()
+        else:
+            self._mode = "idle"
+        return Command("close_map", None, "map_state_not_recognized")
+
     def _prone_tick(self, world: WorldView, now_ms: int) -> Command:
         if not self._locked and self._remark_due(now_ms):
             return self._start_marking(now_ms, "remark_interval elapsed")
-        interval = self._opt("micro_move_interval_ms")
-        if self._last_micro is None:
-            self._last_micro = now_ms
-            # 距离未知时先松开 W：看不懂局面就不要继续走
-            return Command("release_w") if world.dist_ratio is None else Command("prone")
-        if interval is not None and now_ms - self._last_micro >= interval:
-            self._last_micro = now_ms
-            return Command("prone")
-        return Command("idle")
+        # 趴着时只松开 W；姿态键绝不再按（Z 是 toggle）
+        return Command("release_w") if world.dist_ratio is None else Command("idle")
 
     def _running_tick(self, world: WorldView, now_ms: int) -> Command:
         if world.health_drop_fast:
-            log.warning("[FSM] 跑圈中血量骤降 -> 停止前进并趴下")
             self._enter_prone()
+            cmd = self._prone_command()
+            if cmd is not None:
+                log.warning("[FSM] 跑圈中血量骤降 -> 停止前进并趴下")
+                return cmd
             return Command("release_w")
+
+        # 趴下后必须显式起身，否则 press_w 只是爬行
+        if self._posture != POSTURE_STANDING:
+            if self._posture == POSTURE_PRONE:
+                self._posture = POSTURE_STANDING
+                log.info("[FSM] 起身后再跑圈")
+                return Command("stand")
+            # 从未按过姿态键：角色默认站立，无需发按键
+            self._posture = POSTURE_STANDING
 
         if world.dist_ratio is not None and world.dist_ratio <= 1 - self._zone_margin:
             log.info("[FSM] 已进入圈内 (dist_ratio=%.2f) -> 停止前进", world.dist_ratio)
             self._enter_prone()
-            return Command("release_w")
+            cmd = self._prone_command()
+            return cmd if cmd is not None else Command("release_w")
 
         if world.marker_x is None:
             if self._lost_since is None:
@@ -219,7 +293,8 @@ class BotFsm:
                 if now_ms - self._scan_since >= self._p.value("scan_max_ms"):
                     log.warning("[FSM] 扫视失败 -> 回趴下，等下一轮重新标点")
                     self._enter_prone()
-                    return Command("release_w")
+                    cmd = self._prone_command()
+                    return cmd if cmd is not None else Command("release_w")
                 return Command("scan")
             return Command("idle")
 
@@ -256,12 +331,18 @@ class BotFsm:
         if self._stuck_count >= limit:
             log.warning("[FSM] 连续卡住达上限 -> 就地趴下，不再尝试")
             self._lock_prone()
-            return Command("release_w")
+            cmd = self._prone_command()
+            return cmd if cmd is not None else Command("release_w")
         return Command("turn", _UNSTICK_STEP_PX)
 
     def _marking_tick(self, world: WorldView, now_ms: int) -> Command:
+        if self._map_close_pending:
+            # 已经发过关图：等识别器切走，期间绝不再按 M（否则会把地图又打开）
+            return Command("idle", None, "waiting_for_map_close")
         self._mode = "marking"
         if self._marked:
+            self._map_close_pending = True
+            self._last_map_close_ms = now_ms
             self._mode = "running"
             log.info("[FSM] 标点完成，关地图开始跑圈")
             return Command("close_map")
@@ -269,21 +350,23 @@ class BotFsm:
             self._marked = True
             self._last_mark_ms = now_ms
             self._mark_wait_since = None
+            self._mark_fail_count = 0
             log.info("[FSM] 地图右键标点 %s", world.mark_point)
             return Command("mark", world.mark_point)
         if self._mark_wait_since is None:
             self._mark_wait_since = now_ms
-        timeout = self._p.value("marking_timeout_ms")
-        if now_ms - self._mark_wait_since >= timeout:
+        if now_ms - self._mark_wait_since >= self._marking_timeout:
             self._mark_wait_since = None
             self._mark_fail_count += 1
             limit = self._p.int_value("mark_fail_limit")
             log.warning(
                 "[FSM] 地图上 %dms 未找到可标的白圈 (%d/%d)",
-                int(timeout),
+                int(self._marking_timeout),
                 self._mark_fail_count,
                 limit,
             )
+            self._map_close_pending = True
+            self._last_map_close_ms = now_ms
             if self._mark_fail_count >= limit:
                 log.warning("[FSM] 标点连续失败达上限 -> 就地趴下")
                 self._lock_prone()
@@ -304,33 +387,76 @@ class BotFsm:
         self._stuck_ref = None
         self._stuck_since = None
         if state is VisualState.MARKING:
-            self._marked = False
-            self._mark_wait_since = now_ms
-            self._mode = "marking"
+            if not self._map_close_pending:
+                self._marked = False
+                self._mark_wait_since = now_ms
+                self._mode = "marking"
         elif state is VisualState.GROUNDED:
             # 从标记阶段回到地面：地图已关，进入跑圈（无论是否标成功）
+            self._map_close_pending = False
             if self._mode == "marking":
                 self._mode = "running"
                 log.info("[FSM] 标记阶段结束，转入跑圈")
+            if old is VisualState.DOWNED:
+                # 被救起后角色自动站起，之前记录的姿态不再可信
+                self._posture = POSTURE_UNKNOWN
+        elif state is VisualState.UNKNOWN:
+            # UNKNOWN 可能只是地图/特效遮挡：保留 mode 与开图闩锁，避免重复按 M
+            pass
         else:
             self._mode = "idle"
+        if state is VisualState.DOWNED:
+            self._posture = POSTURE_UNKNOWN
         if state in (VisualState.LOBBY, VisualState.QUEUE, VisualState.SPAWN):
-            # 新一局：清空上一局的失败计数，否则会一直趴着不动
+            # 新一局：清空上一局的计数与姿态，否则会一直趴着/不标点
             self._mark_fail_count = 0
             self._stuck_count = 0
             self._locked = False
             self._last_mark_ms = None
+            self._posture = POSTURE_UNKNOWN
+            self._map_close_pending = False
+            self._last_map_close_ms = None
         log.debug("[FSM] %s -> %s", old.value, state.value)
+
+    def _map_reopen_blocked(self, now_ms: int) -> bool:
+        if self._last_map_close_ms is None:
+            return False
+        return now_ms - self._last_map_close_ms < self._map_reopen_cooldown
+
+    def _prone_command(self) -> Command | None:
+        """姿态切到趴下时返回一次性命令；已经趴着则返回 None。"""
+        if self._posture == POSTURE_PRONE:
+            return None
+        self._posture = POSTURE_PRONE
+        log.info("[FSM] 趴下")
+        return Command("prone")
 
     def _enter_prone(self) -> None:
         if self._mode != "prone":
             log.info("[FSM] 进入趴下模式")
         self._mode = "prone"
-        self._last_micro = None
 
     def _lock_prone(self) -> None:
         self._locked = True
         self._enter_prone()
+
+    def _resolve_marking_timeout(self) -> float:
+        """开图超时必须覆盖「连续投票 + 最短驻留」，否则识别器永远来不及切状态。"""
+        timeout = self._p.value("marking_timeout_ms")
+        needed = (
+            self._p.values.get("vote_frames", 3) * self._p.values.get("frame_interval_ms", 80)
+            + self._p.values.get("min_dwell_ms", 500)
+            + 500  # 余量：地图动画/掉帧
+        )
+        if timeout < needed:
+            log.warning(
+                "[FSM] marking_timeout_ms=%.0f 小于识别所需 %.0fms -> 已提升到 %.0fms",
+                timeout,
+                needed,
+                needed,
+            )
+            return needed
+        return timeout
 
     def _opt(self, key: str) -> float | None:
         """可选参数：缺失时停用对应功能并告警一次（而不是启动即崩）。"""

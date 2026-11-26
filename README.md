@@ -104,11 +104,13 @@ python -m venv .venv
 - `config/anchors.1920x1080.json`：分辨率、ROI、模板锚点（含 `state` 归属）、HSV 区间、几何参数
   - `calibrated`、`rois.*`、`anchors.*.roi/template/threshold/state`
   - `hsv.waypoint_yellow`（罗盘黄标）、`hsv.circle_white`（白圈）、`hsv.health_white/red`
-  - `values.circle_inner_factor`（标点在 0.9R 圈内）、`marker_min_pixels`、`circle_r_min/max`、`scan_step_px`
+  - `values.circle_inner_factor`（标点在 0.9R 圈内）、`marker_min_pixels`、`scan_step_px`
+  - `values.map_circle_r_min/max`（大地图白圈半径）、`values.minimap_circle_r_min/max`（小地图白圈半径）
 - `config/policy.json`：所有时间与行为阈值（毫秒）
   - `vote_frames`/`min_dwell_ms`（防抖）、`dead_zone_px`/`steer_step_px`（罗盘闭环）
-  - `jump_delay_ms`、`marking_timeout_ms`、`mark_fail_limit`、`run_fail_limit`、`stuck_detect_ms`
-  - `remark_interval_ms`、`micro_move_interval_ms`、`downed_crawl_ms`、`freefall_timeout_ms`
+  - `jump_delay_ms`、`marking_timeout_ms`、`map_reopen_cooldown_ms`、`mark_fail_limit`、`run_fail_limit`、`stuck_detect_ms`
+  - `remark_interval_ms`、`dist_stale_ms`、`downed_crawl_ms`、`freefall_timeout_ms`、`max_invalid_frames`
+  - `keys.*`：键位绑定（`forward`/`jump`/`map`/`prone`/`stand`，`null` 表示停用该动作；趴下默认 Z）
   - `watchdog_ms`、`session_limit_ms`、`unknown_alert_ms`、`queue_alert_ms`、`health_drop_*`
   - `humanize.*`：输入人类化（P0）。`enabled` 总开关；`key_hold_ms`/`reaction_ms`/`inter_action_ms` 停顿区间；
     `turn_segments`/`turn_segment_pause_ms`/`turn_jitter_ratio` 转向分段；`click_offset_ratio` 点击落点偏移；
@@ -144,7 +146,7 @@ python -m venv .venv
 ## 已知限制（务必了解）
 
 - 所有 ROI 与模板都需在游戏机上标定；语言、HUD 缩放、色盲模式变化会让模板失效。
-- 小地图圈检测失败时按保守策略**原地趴下**，不会盲走。
+- 本局还没有标点时，落地后强制开图标点一次；小地图看不见圈时保留地图算出的距离，超过 `dist_stale_ms` 才失效。
 - `DOWNED` 只做短距离爬行后趴住（单人四排没有队友可救）。
 - 只支持 1920×1080 客户区，不做缩放适配。
 

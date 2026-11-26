@@ -1,10 +1,11 @@
 import json
 import random
+from dataclasses import replace
 
 import pytest
 
 from pubgbot.actions import ActionExecutor
-from pubgbot.config import HumanizeConfig, load_config
+from pubgbot.config import HumanizeConfig, Rect, load_config
 from pubgbot.fsm import Command
 from pubgbot.humanize import Humanizer
 
@@ -50,9 +51,9 @@ def cfg(tmp_path):
     return load_config(tmp_path / "a.json", tmp_path / "p.json")
 
 
-def ex(cfg, fg=True, humanizer=None):
+def ex(cfg, fg=True, humanizer=None, origin=None):
     b = Fake()
-    return ActionExecutor(b, cfg, lambda: fg, humanizer), b
+    return ActionExecutor(b, cfg, lambda: fg, humanizer, origin_provider=origin), b
 
 
 def humanizer(seed=7):
@@ -133,4 +134,36 @@ def test_prone_releases_w_first(cfg):
     e, b = ex(cfg)
     e.execute(Command("press_w"))
     e.execute(Command("prone"))
-    assert b.calls[:4] == [("down", "w"), ("up", "w"), ("down", "c"), ("up", "c")]
+    # PUBG 默认 Z 才是趴下（C 是蹲）
+    assert b.calls[:4] == [("down", "w"), ("up", "w"), ("down", "z"), ("up", "z")]
+
+
+def test_stand_uses_configured_key(cfg):
+    e, b = ex(cfg)
+    e.execute(Command("stand"))
+    assert b.calls == [("down", "z"), ("up", "z")]
+
+
+def test_disabled_key_binding_is_noop(cfg):
+    cfg2 = replace(cfg, policy=replace(cfg.policy, keys={**cfg.policy.keys, "prone": None}))
+    e, b = ex(cfg2)
+    e.execute(Command("prone"))
+    assert b.calls == []
+
+
+def test_mark_and_roi_clicks_add_window_origin(cfg):
+    e, b = ex(cfg, origin=lambda: Rect(100, 50, 64, 48))
+    e.execute(Command("mark", (30, 20)))
+    assert ("move", 130, 70) in b.calls
+    assert ("mdown", "right") in b.calls
+
+    e2, b2 = ex(cfg, origin=lambda: Rect(100, 50, 64, 48))
+    e2.execute(Command("click_start"))
+    assert ("move", 120, 65) in b2.calls
+    assert ("mdown", "left") in b2.calls
+
+
+def test_click_outside_client_is_skipped(cfg):
+    e, b = ex(cfg, origin=lambda: Rect(100, 50, 64, 48))
+    e.execute(Command("mark", (200, 20)))
+    assert b.calls == []

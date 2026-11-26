@@ -102,10 +102,21 @@ class HumanizeConfig:
     click_offset_ratio: float = 0.10
 
 
+# 默认键位：PUBG 默认 Z=趴下（再按一次起身）。null 表示停用该动作。
+DEFAULT_KEYS: dict[str, str | None] = {
+    "forward": "w",
+    "jump": "f",
+    "map": "m",
+    "prone": "z",
+    "stand": "z",
+}
+
+
 @dataclass(frozen=True)
 class PolicyConfig:
     values: dict[str, float]
     humanize: HumanizeConfig = field(default_factory=HumanizeConfig)
+    keys: dict[str, str | None] = field(default_factory=lambda: dict(DEFAULT_KEYS))
 
     def value(self, key: str) -> float:
         try:
@@ -115,6 +126,13 @@ class PolicyConfig:
 
     def int_value(self, key: str) -> int:
         return int(round(self.value(key)))
+
+    def key(self, name: str) -> str | None:
+        """键位绑定；None 表示该动作被配置停用。"""
+        try:
+            return self.keys[name]
+        except KeyError:
+            raise ConfigError(f"missing key binding: {name}") from None
 
 
 @dataclass(frozen=True)
@@ -218,6 +236,26 @@ def _parse_humanize(raw: object, where: str) -> HumanizeConfig:
     )
 
 
+def _parse_keys(raw: object, where: str) -> dict[str, str | None]:
+    keys: dict[str, str | None] = dict(DEFAULT_KEYS)
+    if raw is None:
+        return keys
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: 必须是对象")
+    for name, value in raw.items():
+        if name not in DEFAULT_KEYS:
+            raise ConfigError(
+                f"{where}.{name}: 未知键位名, 可用: {', '.join(sorted(DEFAULT_KEYS))}"
+            )
+        if value is None:
+            keys[name] = None
+        elif isinstance(value, str) and value.strip():
+            keys[name] = value.strip()
+        else:
+            raise ConfigError(f"{where}.{name}: 期望按键名字符串或 null（停用）, 实际为 {value!r}")
+    return keys
+
+
 def load_config(anchors_path: Path, policy_path: Path) -> AppConfig:
     raw = _read_json(anchors_path)
     pol = _read_json(policy_path)
@@ -280,7 +318,8 @@ def load_config(anchors_path: Path, policy_path: Path) -> AppConfig:
         calibrated=bool(raw.get("calibrated", False)),
     )
     humanize = _parse_humanize(pol.get("humanize"), f"{policy_path}: humanize")
+    keys = _parse_keys(pol.get("keys"), f"{policy_path}: keys")
     return AppConfig(
         anchors=anchors_cfg,
-        policy=PolicyConfig(values=policy_values, humanize=humanize),
+        policy=PolicyConfig(values=policy_values, humanize=humanize, keys=keys),
     )

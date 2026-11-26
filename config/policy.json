@@ -13,13 +13,14 @@
     "jump_delay_ms": 20000,
     "start_click_cooldown_ms": 5000,
     "remark_interval_ms": 20000,
-    "marking_timeout_ms": 1500,
+    "marking_timeout_ms": 3000,
+    "map_reopen_cooldown_ms": 2000,
+    "dist_stale_ms": 15000,
     "marker_lost_scan_ms": 2000,
     "scan_max_ms": 3000,
     "stuck_detect_ms": 10000,
     "mark_fail_limit": 2,
     "run_fail_limit": 3,
-    "micro_move_interval_ms": 15000,
     "downed_crawl_ms": 2000,
     "freefall_timeout_ms": 180000,
     "watchdog_ms": 2000,
@@ -27,7 +28,15 @@
     "unknown_alert_ms": 10000,
     "queue_alert_ms": 600000,
     "health_drop_window_ms": 3000,
-    "health_drop_ratio": 0.05
+    "health_drop_ratio": 0.05,
+    "max_invalid_frames": 30
+  },
+  "keys": {
+    "forward": "w",
+    "jump": "f",
+    "map": "m",
+    "prone": "z",
+    "stand": "z"
   },
   "humanize": {
     "enabled": true,

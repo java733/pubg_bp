@@ -19,6 +19,7 @@ def cfg(tmp_path):
          "values": {"circle_inner_factor": 0.9}}
     p = {"values": {"jump_delay_ms": 20000, "start_click_cooldown_ms": 5000,
                     "remark_interval_ms": 20000, "marking_timeout_ms": 1500,
+                    "map_reopen_cooldown_ms": 2000,
                     "marker_lost_scan_ms": 2000, "scan_max_ms": 3000,
                     "stuck_detect_ms": 10000, "mark_fail_limit": 2, "run_fail_limit": 3,
                     "zone_margin_factor": 0.08, "dead_zone_px": 6, "steer_step_px": 8,
@@ -56,11 +57,15 @@ def test_health_drop_detected_once(cfg):
 def test_mark_failures_lead_to_prone(cfg):
     f = BotFsm(cfg)
     outside = WorldView(marker_x=None, compass_center_x=50, dist_ratio=1.5, health_drop_fast=False)
-    for base in (0, 5000):
-        assert f.tick(obs(), outside, base).kind == "open_map"
-        assert f.tick(obs(VisualState.MARKING), outside, base + 100).kind == "idle"
-        assert f.tick(obs(VisualState.MARKING), outside, base + 1700).kind == "close_map"
-    assert f.tick(obs(), outside, 10000).kind == "prone"
+    assert f.tick(obs(), outside, 0).kind == "open_map"
+    assert f.tick(obs(VisualState.MARKING), outside, 100).kind == "idle"
+    assert f.tick(obs(VisualState.MARKING), outside, 1700).kind == "close_map"
+    # 关图冷却期内不重按 M
+    assert f.tick(obs(), outside, 1800).kind == "idle"
+    assert f.tick(obs(), outside, 3700).kind == "open_map"
+    assert f.tick(obs(VisualState.MARKING), outside, 3800).kind == "idle"
+    assert f.tick(obs(VisualState.MARKING), outside, 5400).kind == "close_map"
+    assert f.tick(obs(), outside, 5500).kind == "prone"
     assert f.mode == "prone"
 
 
@@ -68,6 +73,13 @@ def test_remark_after_interval(cfg):
     f = BotFsm(cfg)
     outside = WorldView(marker_x=None, compass_center_x=50, dist_ratio=1.5, health_drop_fast=False)
     assert f.tick(obs(), outside, 0).kind == "open_map"
+    marked = WorldView(marker_x=None, compass_center_x=50, dist_ratio=1.5, health_drop_fast=False,
+                       mark_point=(10, 10))
+    assert f.tick(obs(VisualState.MARKING), marked, 100).kind == "mark"
+    assert f.tick(obs(VisualState.MARKING), marked, 200).kind == "close_map"
+    inside = WorldView(marker_x=None, compass_center_x=50, dist_ratio=0.5, health_drop_fast=False)
+    assert f.tick(obs(), inside, 300).kind == "prone"
+    assert f.tick(obs(), inside, 20300).kind == "open_map"
 
 
 def test_zone_run_turns_and_stops(cfg):

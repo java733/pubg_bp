@@ -78,3 +78,18 @@ def test_humanize_invalid_range_raises(tmp_path):
     p = {"values": {}, "humanize": {"turn_segments": [5, 2]}}
     with pytest.raises(ConfigError, match="turn_segments"):
         write(tmp_path, policy=p)
+
+
+def test_key_bindings_default_and_override(tmp_path):
+    assert write(tmp_path).policy.key("prone") == "z"
+    p = {"values": {}, "keys": {"prone": "v", "stand": None}}
+    cfg = write(tmp_path, policy=p)
+    assert cfg.policy.key("prone") == "v"
+    assert cfg.policy.key("stand") is None
+    assert cfg.policy.key("forward") == "w"
+
+
+def test_unknown_key_binding_raises(tmp_path):
+    p = {"values": {}, "keys": {"no_such_action": "x"}}
+    with pytest.raises(ConfigError, match="no_such_action"):
+        write(tmp_path, policy=p)

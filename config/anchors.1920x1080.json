@@ -32,8 +32,10 @@
   "values": {
     "circle_inner_factor": 0.9,
     "marker_min_pixels": 12,
-    "circle_r_min": 24,
-    "circle_r_max": 520,
+    "map_circle_r_min": 40,
+    "map_circle_r_max": 520,
+    "minimap_circle_r_min": 8,
+    "minimap_circle_r_max": 160,
     "scan_step_px": 30
   }
 }

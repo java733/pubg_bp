@@ -2,6 +2,9 @@
 
 硬性要求：任何按下的键都必须成对释放。所有按住状态记录在 self._held，
 release_all() 是唯一的兜底出口，异常/F12/看门狗路径都会调用它。
+
+P0 人类化：按键按住时长、动作间停顿、转向分段、点击落点都由 Humanizer 采样，
+让输入不再呈现“固定节拍 + 精确坐标”的特征。Humanizer 可注入，便于单测。
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from typing import Callable, Iterator, Protocol
 
 from .config import AppConfig, Rect
 from .fsm import Command
+from .humanize import Humanizer
 
 log = logging.getLogger(__name__)
 
@@ -20,21 +24,25 @@ class InputBackend(Protocol):
     def key_down(self, key: str) -> None: ...
     def key_up(self, key: str) -> None: ...
     def move_rel(self, dx: int, dy: int) -> None: ...
-    def click_right_at(self, x: int, y: int) -> None: ...
-    def click_left_at(self, x: int, y: int) -> None: ...
+    def cursor_pos(self) -> tuple[int, int]: ...
+    def mouse_down(self, button: str) -> None: ...
+    def mouse_up(self, button: str) -> None: ...
 
 
 class PyDirectBackend:
     """基于 pydirectinput 的真实键鼠后端（scancode 级）。
 
     pydirectinput 默认每次调用后 sleep(PAUSE=0.1) 且按键名是字符；
-    这里关掉内置暂停，节奏由主循环控制。
+    这里关掉内置暂停，节奏由主循环和 Humanizer 控制。
+    鼠标移动一律走相对位移，不用 SetCursorPos 瞬移。
     """
 
     def __init__(self) -> None:
         import pydirectinput
+        import win32api
 
         self._pdi = pydirectinput
+        self._win32api = win32api
         pydirectinput.PAUSE = 0.0
         pydirectinput.FAILSAFE = True
 
@@ -47,19 +55,15 @@ class PyDirectBackend:
     def move_rel(self, dx: int, dy: int) -> None:
         self._pdi.moveRel(int(dx), int(dy), relative=True)
 
-    def click_right_at(self, x: int, y: int) -> None:
-        self._pdi.moveTo(int(x), int(y))
-        self._pdi.mouseDown(button="right")
-        self._pdi.mouseUp(button="right")
+    def cursor_pos(self) -> tuple[int, int]:
+        x, y = self._win32api.GetCursorPos()
+        return int(x), int(y)
 
-    def click_left_at(self, x: int, y: int) -> None:
-        self._pdi.moveTo(int(x), int(y))
-        self._pdi.mouseDown(button="left")
-        self._pdi.mouseUp(button="left")
+    def mouse_down(self, button: str) -> None:
+        self._pdi.mouseDown(button=button)
 
-
-def center_of(rect: Rect) -> tuple[int, int]:
-    return rect.x + rect.w // 2, rect.y + rect.h // 2
+    def mouse_up(self, button: str) -> None:
+        self._pdi.mouseUp(button=button)
 
 
 class ActionExecutor:
@@ -68,11 +72,13 @@ class ActionExecutor:
         backend: InputBackend,
         cfg: AppConfig,
         foreground_ok: Callable[[], bool],
+        humanizer: Humanizer | None = None,
     ) -> None:
         self._backend = backend
         self._cfg = cfg
         self._foreground_ok = foreground_ok
         self._held: list[str] = []
+        self._human = humanizer if humanizer is not None else Humanizer(cfg.policy.humanize)
 
     def held_keys(self) -> set[str]:
         return set(self._held)
@@ -126,24 +132,58 @@ class ActionExecutor:
         elif kind == "close_map":
             self._tap("m")
         elif kind == "turn":
-            self._backend.move_rel(int(cmd.arg or 0), 0)
+            self._turn(int(cmd.arg or 0))
         elif kind == "mark":
             x, y = cmd.arg  # type: ignore[misc]
-            self._backend.click_right_at(int(x), int(y))
+            self._click(*self._human.mark_jitter(int(x), int(y)), button="right")
         elif kind == "click_start":
             self._click_roi("lobby_button")
         elif kind == "click_return":
             self._click_roi("return_button")
         elif kind == "scan":
             step = int(self._cfg.anchors.value("scan_step_px"))
-            for _ in range(3):
-                self._backend.move_rel(step, 0)
+            for dx in self._human.scan_steps(step):
+                self._backend.move_rel(dx, 0)
+                self._human.segment_pause()
         else:
             log.warning("[ACT] 未知命令 %r -> 已忽略", kind)
 
     def _tap(self, key: str) -> None:
+        self._human.reaction()
         self._backend.key_down(key)
-        self._backend.key_up(key)
+        try:
+            self._human.key_hold()
+        finally:
+            self._backend.key_up(key)
+        self._human.inter_action()
+
+    def _turn(self, dx: int) -> None:
+        for step_x, step_y in self._human.turn_plan(dx):
+            self._backend.move_rel(step_x, step_y)
+            self._human.segment_pause()
+
+    def _move_to(self, x: int, y: int) -> None:
+        """相对位移分两段靠近目标，避免一步瞬移。"""
+        cx, cy = self._backend.cursor_pos()
+        dx, dy = int(x) - cx, int(y) - cy
+        if dx == 0 and dy == 0:
+            return
+        ratio = self._human.split_ratio()
+        first_x, first_y = int(round(dx * ratio)), int(round(dy * ratio))
+        self._backend.move_rel(first_x, first_y)
+        self._human.segment_pause()
+        self._backend.move_rel(dx - first_x, dy - first_y)
+        self._human.segment_pause()
+
+    def _click(self, x: int, y: int, button: str) -> None:
+        self._human.reaction()
+        self._move_to(x, y)
+        self._backend.mouse_down(button)
+        try:
+            self._human.key_hold()
+        finally:
+            self._backend.mouse_up(button)
+        self._human.inter_action()
 
     def _click_roi(self, roi_name: str) -> None:
         try:
@@ -151,5 +191,5 @@ class ActionExecutor:
         except Exception as exc:
             log.error("[ERR] actions: 缺少 ROI %s (%s) -> 请先在 config 中配置该按钮区域", roi_name, exc)
             return
-        x, y = center_of(rect)
-        self._backend.click_left_at(x, y)
+        x, y = self._human.click_point(rect)
+        self._click(x, y, button="left")

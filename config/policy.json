@@ -28,5 +28,16 @@
     "queue_alert_ms": 600000,
     "health_drop_window_ms": 3000,
     "health_drop_ratio": 0.05
+  },
+  "humanize": {
+    "enabled": true,
+    "seed": null,
+    "key_hold_ms": [55, 145],
+    "reaction_ms": [30, 120],
+    "inter_action_ms": [20, 90],
+    "turn_segments": [3, 8],
+    "turn_segment_pause_ms": [4, 18],
+    "turn_jitter_ratio": 0.03,
+    "click_offset_ratio": 0.1
   }
 }

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -85,8 +85,27 @@ class AnchorsConfig:
 
 
 @dataclass(frozen=True)
+class HumanizeConfig:
+    """输入人类化参数。区间均为 [min, max]，时间单位毫秒。
+
+    默认值即为启用状态；policy.json 里缺省 humanize 段时按默认值运行。
+    """
+
+    enabled: bool = True
+    seed: int | None = None
+    key_hold_ms: tuple[int, int] = (55, 145)
+    reaction_ms: tuple[int, int] = (30, 120)
+    inter_action_ms: tuple[int, int] = (20, 90)
+    turn_segments: tuple[int, int] = (3, 8)
+    turn_segment_pause_ms: tuple[int, int] = (4, 18)
+    turn_jitter_ratio: float = 0.03
+    click_offset_ratio: float = 0.10
+
+
+@dataclass(frozen=True)
 class PolicyConfig:
     values: dict[str, float]
+    humanize: HumanizeConfig = field(default_factory=HumanizeConfig)
 
     def value(self, key: str) -> float:
         try:
@@ -130,6 +149,73 @@ def _parse_triplet(obj: object, where: str) -> tuple[int, int, int]:
         return tuple(int(v) for v in obj)  # type: ignore[return-value]
     except (TypeError, ValueError):
         raise ConfigError(f"{where}: 分量必须是整数, 实际为 {obj!r}") from None
+
+
+def _parse_int_range(obj: object, where: str, default: tuple[int, int]) -> tuple[int, int]:
+    if obj is None:
+        return default
+    if not isinstance(obj, (list, tuple)) or len(obj) != 2:
+        raise ConfigError(f"{where}: 期望 [min, max] 两元素区间, 实际为 {obj!r}")
+    try:
+        lo, hi = (int(v) for v in obj)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: 区间分量必须是整数, 实际为 {obj!r}") from None
+    if lo > hi:
+        raise ConfigError(f"{where}: 区间下限 {lo} 大于上限 {hi}")
+    return lo, hi
+
+
+def _parse_ratio(obj: object, where: str, default: float) -> float:
+    if obj is None:
+        return default
+    try:
+        value = float(obj)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: 期望 0~1 的比例, 实际为 {obj!r}") from None
+    if not 0.0 <= value <= 1.0:
+        raise ConfigError(f"{where}: 期望 0~1 的比例, 实际为 {value}")
+    return value
+
+
+def _parse_humanize(raw: object, where: str) -> HumanizeConfig:
+    if raw is None:
+        return HumanizeConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: 必须是对象")
+    default = HumanizeConfig()
+
+    enabled = raw.get("enabled", default.enabled)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"{where}.enabled: 期望 true/false, 实际为 {enabled!r}")
+
+    seed = default.seed
+    if raw.get("seed") is not None:
+        try:
+            seed = int(raw["seed"])
+        except (TypeError, ValueError):
+            raise ConfigError(f"{where}.seed: 期望整数, 实际为 {raw['seed']!r}") from None
+
+    return HumanizeConfig(
+        enabled=enabled,
+        seed=seed,
+        key_hold_ms=_parse_int_range(raw.get("key_hold_ms"), f"{where}.key_hold_ms", default.key_hold_ms),
+        reaction_ms=_parse_int_range(raw.get("reaction_ms"), f"{where}.reaction_ms", default.reaction_ms),
+        inter_action_ms=_parse_int_range(
+            raw.get("inter_action_ms"), f"{where}.inter_action_ms", default.inter_action_ms
+        ),
+        turn_segments=_parse_int_range(
+            raw.get("turn_segments"), f"{where}.turn_segments", default.turn_segments
+        ),
+        turn_segment_pause_ms=_parse_int_range(
+            raw.get("turn_segment_pause_ms"), f"{where}.turn_segment_pause_ms", default.turn_segment_pause_ms
+        ),
+        turn_jitter_ratio=_parse_ratio(
+            raw.get("turn_jitter_ratio"), f"{where}.turn_jitter_ratio", default.turn_jitter_ratio
+        ),
+        click_offset_ratio=_parse_ratio(
+            raw.get("click_offset_ratio"), f"{where}.click_offset_ratio", default.click_offset_ratio
+        ),
+    )
 
 
 def load_config(anchors_path: Path, policy_path: Path) -> AppConfig:
@@ -193,4 +279,8 @@ def load_config(anchors_path: Path, policy_path: Path) -> AppConfig:
         values=values,
         calibrated=bool(raw.get("calibrated", False)),
     )
-    return AppConfig(anchors=anchors_cfg, policy=PolicyConfig(values=policy_values))
+    humanize = _parse_humanize(pol.get("humanize"), f"{policy_path}: humanize")
+    return AppConfig(
+        anchors=anchors_cfg,
+        policy=PolicyConfig(values=policy_values, humanize=humanize),
+    )

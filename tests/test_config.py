@@ -48,3 +48,33 @@ def test_unknown_anchor_roi_reference_raises(tmp_path):
            "hsv": {}, "values": {}}
     with pytest.raises(ConfigError, match="missing_roi"):
         write(tmp_path, anchors=bad)
+
+
+def test_humanize_defaults_when_absent(tmp_path):
+    h = write(tmp_path).policy.humanize
+    assert h.enabled is True
+    assert h.key_hold_ms == (55, 145)
+    assert h.turn_segments == (3, 8)
+
+
+def test_humanize_overrides(tmp_path):
+    p = {
+        "values": {},
+        "humanize": {
+            "enabled": False,
+            "key_hold_ms": [10, 20],
+            "turn_segments": [2, 4],
+            "click_offset_ratio": 0.2,
+        },
+    }
+    h = write(tmp_path, policy=p).policy.humanize
+    assert h.enabled is False
+    assert h.key_hold_ms == (10, 20)
+    assert h.turn_segments == (2, 4)
+    assert h.click_offset_ratio == 0.2
+
+
+def test_humanize_invalid_range_raises(tmp_path):
+    p = {"values": {}, "humanize": {"turn_segments": [5, 2]}}
+    with pytest.raises(ConfigError, match="turn_segments"):
+        write(tmp_path, policy=p)

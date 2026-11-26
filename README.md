@@ -110,6 +110,9 @@ python -m venv .venv
   - `jump_delay_ms`、`marking_timeout_ms`、`mark_fail_limit`、`run_fail_limit`、`stuck_detect_ms`
   - `remark_interval_ms`、`micro_move_interval_ms`、`downed_crawl_ms`、`freefall_timeout_ms`
   - `watchdog_ms`、`session_limit_ms`、`unknown_alert_ms`、`queue_alert_ms`、`health_drop_*`
+  - `humanize.*`：输入人类化（P0）。`enabled` 总开关；`key_hold_ms`/`reaction_ms`/`inter_action_ms` 停顿区间；
+    `turn_segments`/`turn_segment_pause_ms`/`turn_jitter_ratio` 转向分段；`click_offset_ratio` 点击落点偏移；
+    `seed` 固定随机种子（`null` 为每次不同，便于复现问题时填整数）
 
 ## 日志与排错
 

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "resolution": [1920, 1080],
+  "calibrated": false,
+  "_note": "calibrated=false 表示 ROI 仍是占位值。请在游戏机上用 python tools/pick_roi.py 逐个标定后再改为 true。",
+  "rois": {
+    "full": [0, 0, 1920, 1080],
+    "compass": [560, 6, 800, 42],
+    "minimap": [1592, 776, 320, 296],
+    "map": [400, 40, 1120, 1000],
+    "health": [48, 990, 460, 26],
+    "lobby_button": [760, 940, 400, 80],
+    "return_button": [760, 940, 400, 80]
+  },
+  "anchors": {
+    "lobby_start": {"roi": "lobby_button", "template": "lobby_start.png", "threshold": 0.85, "state": "LOBBY"},
+    "queue_loading": {"roi": "full", "template": "queue_loading.png", "threshold": 0.85, "state": "QUEUE"},
+    "spawn_countdown": {"roi": "full", "template": "spawn_countdown.png", "threshold": 0.85, "state": "SPAWN"},
+    "plane_prompt": {"roi": "full", "template": "plane_prompt.png", "threshold": 0.85, "state": "PLANE"},
+    "freefall_height": {"roi": "full", "template": "freefall_height.png", "threshold": 0.85, "state": "FREEFALL"},
+    "grounded_minimap": {"roi": "minimap", "template": "grounded_minimap.png", "threshold": 0.85, "state": "GROUNDED"},
+    "map_open": {"roi": "full", "template": "map_open.png", "threshold": 0.85, "state": "MARKING"},
+    "downed_banner": {"roi": "full", "template": "downed_banner.png", "threshold": 0.85, "state": "DOWNED"},
+    "result_text": {"roi": "full", "template": "result_text.png", "threshold": 0.85, "state": "RESULT"}
+  },
+  "hsv": {
+    "waypoint_yellow": [[18, 90, 120], [38, 255, 255]],
+    "circle_white": [[0, 0, 200], [180, 40, 255]],
+    "health_white": [[0, 0, 200], [180, 30, 255]],
+    "health_red": [[0, 120, 80], [10, 255, 255]]
+  },
+  "values": {
+    "dead_zone_px": 6,
+    "steer_step_px": 8,
+    "circle_inner_factor": 0.9,
+    "zone_margin_factor": 0.08,
+    "marker_min_pixels": 12,
+    "circle_r_min": 24,
+    "circle_r_max": 520,
+    "scan_step_px": 30
+  }
+}

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pubgbot"
+version = "0.1.0"
+description = "PUBG PC 纯视觉挂机脚本（外部截屏 + 键鼠模拟）"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "dxcam",
+    "mss",
+    "pywin32",
+    "keyboard",
+    "pydirectinput",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["pubgbot*", "tools*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

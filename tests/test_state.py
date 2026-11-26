@@ -66,3 +66,15 @@ def test_nothing_matches_is_unknown(tmp_path):
     r = labels(cfg, tpl)
     obs = [r.observe(np.zeros((48, 64, 3), np.uint8), now) for now in (0, 100, 200)]
     assert all(o.state is VisualState.UNKNOWN for o in obs)
+
+
+def test_three_blank_frames_fall_back_to_unknown(tmp_path):
+    cfg, tpl = build(tmp_path)
+    r = labels(cfg, tpl)
+    for now in (0, 100, 200):
+        r.observe(frame(60), now)
+    assert r.state is VisualState.LOBBY
+    blank = np.zeros((48, 64, 3), np.uint8)
+    for now in (300, 400, 500):
+        r.observe(blank, now)
+    assert r.state is VisualState.UNKNOWN

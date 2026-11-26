@@ -88,16 +88,29 @@ def _write_back(name: str, roi: Rect, png: Path) -> None:
     log.info("[PICK] 已回写 %s: roi=%s template=%s", name, roi, png.name)
 
 
+def _write_roi(name: str, roi: Rect) -> None:
+    """只写 rois[name]，不生成模板（用于按钮点击区域）。"""
+    raw = json.loads(ANCHORS_JSON.read_text(encoding="utf-8"))
+    raw.setdefault("rois", {})[name] = [roi.x, roi.y, roi.w, roi.h]
+    ANCHORS_JSON.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("[PICK] 已回写 roi %s = %s", name, roi)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="PUBG 锚点 ROI 标定")
     parser.add_argument("--list", action="store_true", help="只打印标定状态")
     parser.add_argument("--name", default=None, help="要标定的锚点名（默认取第一个未标定的）")
+    parser.add_argument("--roi", default=None, help="标定普通 ROI（如 lobby_button / return_button），不生成模板")
     args = parser.parse_args()
 
     cfg = load_config(ANCHORS_JSON, POLICY_JSON)
     if args.list:
         print("\n".join(anchor_status(cfg, TEMPLATES_DIR)))
+        print("\n按钮点击区域（用 --roi 标定）:")
+        for name in ("lobby_button", "return_button"):
+            rect = cfg.anchors.rois.get(name)
+            print(f"{name:<20} {rect}")
         return 0
 
     from pubgbot import win
@@ -108,6 +121,17 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERR] pick_roi: 截图失败: {exc} -> 先跑 python tools/doctor.py")
         return 1
+
+    if args.roi:
+        print(f"标定普通 ROI: {args.roi}（只用于点击坐标，不生成模板）")
+        x, y, w, h = cv2.selectROI(f"pick_roi roi: {args.roi}", frame, showCrosshair=True)
+        cv2.destroyAllWindows()
+        if w == 0 or h == 0:
+            print("[ERR] pick_roi: 没有选择区域 -> 已取消")
+            return 1
+        _write_roi(args.roi, Rect(int(x), int(y), int(w), int(h)))
+        print("完成。")
+        return 0
 
     name = args.name or next_anchor_name(cfg)
     print(f"即将标定锚点: {name}")

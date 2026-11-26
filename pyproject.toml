@@ -20,6 +20,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+pubgbot = "pubgbot.main:main"
+
 [tool.setuptools.packages.find]
 include = ["pubgbot*", "tools*"]
 

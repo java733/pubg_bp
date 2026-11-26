@@ -20,6 +20,7 @@ from .fsm import BotFsm, WorldView
 from .jsonlog import JsonlLogger
 from .safety import Safety, SafetyStop
 from .vision.state import Observation, StateRecognizer, VisualState
+from .world import HealthTracker, WorldBuilder
 
 ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger(__name__)
@@ -51,6 +52,22 @@ class NullExecutor:
 
     def release_all(self) -> None:
         return None
+
+
+class ArmedExecutor:
+    """实操作门闸：F10 之前丢弃所有非 idle 命令，只记录不执行。"""
+
+    def __init__(self, inner, safety: Safety) -> None:
+        self._inner = inner
+        self._safety = safety
+
+    def execute(self, cmd) -> None:
+        if cmd.kind != "idle" and not self._safety.armed():
+            return
+        self._inner.execute(cmd)
+
+    def release_all(self) -> None:
+        self._inner.release_all()
 
 
 def summarize_run(rows: list[dict]) -> dict:
@@ -202,6 +219,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--policy", default=str(DEFAULT_POLICY), help="策略配置文件")
     parser.add_argument("--log", default=str(ROOT / "logs" / "run.jsonl"), help="JSONL 日志路径")
     parser.add_argument("--max-frames", type=int, default=None, help="只跑 N 帧后退出（自检用）")
+    parser.add_argument("--autostart", action="store_true", help="启动即执行，不等待 F10")
     parser.add_argument("--prefer", default="dxcam", choices=["dxcam", "mss"], help="优先捕获后端")
     return parser.parse_args(argv)
 
@@ -228,11 +246,15 @@ def main(argv: list[str] | None = None) -> int:
 
     win.enable_dpi_awareness()
     if not win.is_admin():
-        print(
-            "[ERR] main: 当前不是管理员 -> 请用「以管理员身份运行」重新打开终端。"
-            "否则 F10/F12 热键和 SendInput 会被系统静默拦截。"
+        if not args.observe:
+            print(
+                "[ERR] main: 当前不是管理员 -> 请用「以管理员身份运行」重新打开终端。"
+                "否则 F10/F12 热键和 SendInput 会被系统静默拦截。"
+            )
+            return 2
+        log.warning(
+            "[MAIN] 非管理员：观察器模式可以运行，但 F10/F12 全局热键可能无效，可用 Ctrl+C 退出"
         )
-        return 2
 
     try:
         hwnd = win.find_game_window()
@@ -265,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     gate = FrameGate(cfg.anchors.resolution, cfg.policy.value("min_frame_mean"))
     recognizer = StateRecognizer(cfg, TEMPLATES_DIR)
     fsm = BotFsm(cfg)
+    builder = WorldBuilder(cfg, HealthTracker(cfg))
     backend = NullExecutor() if args.observe else PyDirectBackend()
     executor = (
         NullExecutor()
@@ -276,7 +299,15 @@ def main(argv: list[str] | None = None) -> int:
 
     safety = Safety(cfg, executor.release_all, clock, lambda: win.is_foreground(hwnd))
     safety.install_hotkeys()
-    safety.start()
+    if args.autostart:
+        safety.arm()
+    else:
+        safety.start()
+        if not args.observe:
+            log.warning("[MAIN] 等待按 F10 开始执行（在此之前不会发送任何按键）；F12 急停")
+        else:
+            log.info("[MAIN] 观察器模式无需 F10，直接开始记录")
+    loop_executor = executor if args.observe else ArmedExecutor(executor, safety)
 
     log.info("[MAIN] 开始循环：F12 急停，Ctrl+C 退出，日志 %s", args.log)
     result = run(
@@ -284,12 +315,13 @@ def main(argv: list[str] | None = None) -> int:
         gate.validate,
         recognizer,
         fsm,
-        executor,
+        loop_executor,
         safety,
         logger,
         clock,
         max_frames=args.max_frames,
         interval_ms=cfg.policy.int_value("frame_interval_ms"),
+        world_builder=builder.build,
         cfg=cfg,
     )
     logger.close()

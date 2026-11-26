@@ -116,11 +116,10 @@ class StateRecognizer:
 
     def _advance(self, candidate: VisualState | None, confidence: float, now_ms: int) -> None:
         self._votes.append(candidate)
-        stable = (
-            self._votes[0]
-            if len(self._votes) == self._vote_frames and len(set(self._votes)) == 1
-            else None
-        )
+        stable: VisualState | None = None
+        if len(self._votes) == self._vote_frames and len(set(self._votes)) == 1:
+            # 连续 N 帧一致（含"全都不命中" -> UNKNOWN）
+            stable = self._votes[0] if self._votes[0] is not None else VisualState.UNKNOWN
 
         if stable is None:
             self._pending = None
@@ -128,9 +127,9 @@ class StateRecognizer:
         if stable == self._state:
             self._pending = None
             return
-        # 从 UNKNOWN 进入真实状态：投票已稳定即可切换，避免开局空转
-        if self._state == VisualState.UNKNOWN:
-            self._switch(stable, confidence, now_ms, "from-unknown")
+        # UNKNOWN 之间互转不需要驻留：看不见就该立刻停手
+        if self._state == VisualState.UNKNOWN or stable == VisualState.UNKNOWN:
+            self._switch(stable, confidence, now_ms, "vote-stable")
             return
         if self._pending != stable:
             self._pending = stable

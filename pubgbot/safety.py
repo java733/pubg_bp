@@ -35,6 +35,7 @@ class Safety:
         self._stop = False
         self._stop_reason = ""
         self._released = False
+        self._armed = False
         self._hotkeys: list[object] = []
 
     # ---- 生命周期 ----
@@ -57,6 +58,18 @@ class Safety:
         self._started_ms = now
         self._last_heartbeat = now
         log.info("[SAFE] 会话开始 t=%dms", now)
+
+    def arm(self) -> None:
+        """F10：进入执行状态（未 arm 前动作层丢弃所有命令）。"""
+        if self._armed:
+            return
+        self._armed = True
+        if self._started_ms is None:
+            self.start()
+        log.info("[SAFE] 已进入执行状态（F10）")
+
+    def armed(self) -> bool:
+        return self._armed
 
     def heartbeat(self) -> None:
         self._last_heartbeat = self._clock()
@@ -119,8 +132,8 @@ class Safety:
             log.error("[ERR] safety: 释放按键失败: %s -> 请手动按一次 W/S/A/D 确认没有卡键", exc)
 
     def _on_start(self) -> None:
-        log.info("[SAFE] F10 按下：重置心跳与开始时间")
-        self.start()
+        log.info("[SAFE] F10 按下")
+        self.arm()
 
     def _on_stop(self) -> None:
         self.request_stop("F12")

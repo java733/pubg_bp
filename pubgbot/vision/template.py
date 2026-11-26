@@ -70,9 +70,11 @@ def match_anchor(frame: np.ndarray, spec: AnchorSpec, templates_dir: Path) -> Hi
         raise FileNotFoundError(f"锚点 {spec.name} 未配置 template -> 请先运行 tools/pick_roi.py 标定")
     path = Path(spec.template)
     path = path if path.is_absolute() else templates_dir / path
+    if not path.exists():
+        raise FileNotFoundError(
+            f"模板不存在: {path} -> 请确认 templates/ 下存在该文件（pick_roi.py 会生成）"
+        )
     template = cv2.imread(str(path))
     if template is None:
-        raise FileNotFoundError(
-            f"模板读取失败: {path} -> 请确认 templates/ 下存在该文件（pick_roi.py 会生成）"
-        )
+        raise FileNotFoundError(f"模板读取失败（文件损坏或不是图片）: {path}")
     return match(frame, spec.roi, template, spec.threshold)
